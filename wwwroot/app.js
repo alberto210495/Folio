@@ -9,7 +9,7 @@ const pct = new Intl.NumberFormat("en-US", { style: "percent", minimumFractionDi
 const shares = new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 });
 const timeFmt = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
 
-const state = { portfolio: null, quote: null, allocMode: "holding", configured: true, history: null, range: "1M", histClear: null, allocClear: null, orders: null, knownOpenOrders: null, watchlist: [], market: null, tradePage: 1, tradePageSize: 25 };
+const state = { portfolio: null, quote: null, allocMode: "holding", configured: true, history: null, range: "1M", histClear: null, allocClear: null, orders: null, knownOpenOrders: null, watchlist: [], market: null, tradePage: 1, tradePageSize: 25, streaming: false, live: { open: false, upstream: false } };
 
 // ---------- helpers ----------
 function esc(s) {
@@ -118,6 +118,7 @@ function etTime(iso) {
 const marketClosed = () => state.market && !state.market.isOpen && state.market.enforced;
 
 function renderMarket() {
+  renderLive();
   const m = state.market;
   const el = $("#market");
   el.hidden = !m;
@@ -132,6 +133,128 @@ function renderMarket() {
     el.title = m.enforced
       ? "Market orders are paused until the open. Limit and stop orders can be placed and are checked once it opens."
       : "Market hours aren't enforced (Folio:EnforceMarketHours is off), so trades fill at the last price.";
+  }
+}
+
+// ---------- Live prices (server-sent events from /api/stream) ----------
+let stream = null;
+
+function connectStream() {
+  if (stream || !state.streaming || typeof EventSource === "undefined") return;
+  stream = new EventSource("/api/stream");
+  stream.onopen = () => { state.live.open = true; renderLive(); };
+  stream.onerror = () => { state.live.open = false; renderLive(); }; // EventSource retries by itself
+  stream.addEventListener("status", (e) => { state.live.upstream = JSON.parse(e.data).connected; renderLive(); });
+  stream.addEventListener("prices", (e) => applyPrices(JSON.parse(e.data)));
+}
+
+function disconnectStream() {
+  stream?.close();
+  stream = null;
+  state.live.open = false;
+  renderLive();
+}
+
+function renderLive() {
+  const el = $("#live");
+  const show = state.streaming && !!state.market && (state.market.isOpen || !state.market.enforced);
+  el.hidden = !show;
+  if (!show) return;
+  const on = state.live.open && state.live.upstream;
+  el.classList.toggle("on", on);
+  el.innerHTML = `<span class="dot"></span>${on ? "Live" : "Reconnecting…"}`;
+  el.title = on ? "Prices update as trades happen (Finnhub websocket)." : "Live prices are reconnecting; prices refresh every minute meanwhile.";
+}
+
+const round2 = (v) => Math.round(v * 100) / 100;
+
+/** Briefly tints a cell green or red when its price moves (skipped with reduced motion). */
+function flash(td, dir) {
+  if (!dir) return;
+  td.classList.remove("tick-up", "tick-down");
+  void td.offsetWidth; // restart the animation
+  td.classList.add(dir > 0 ? "tick-up" : "tick-down");
+}
+
+/** Updates changed cells in place, so buttons in the row aren't replaced mid-click. */
+function patchRow(row, cells, dir) {
+  for (const [f, html] of Object.entries(cells)) {
+    const td = row.querySelector(`[data-f="${f}"]`);
+    if (!td || td.innerHTML === html) continue;
+    td.innerHTML = html;
+    if (f === "price") flash(td, dir);
+  }
+  row.querySelector(".stale")?.remove(); // a live price isn't stale
+}
+
+function applyPrices(prices) {
+  const p = state.portfolio;
+  const dirs = {};
+  const live = (sym) => prices[sym]?.p;
+
+  if (p) {
+    for (const h of p.holdings) {
+      const px = live(h.symbol);
+      if (px == null) continue;
+      dirs[h.symbol] = Math.sign(px - h.price);
+      h.price = px;
+      h.marketValue = round2(h.quantity * px);
+      h.unrealizedPnl = round2(h.marketValue - h.costBasis);
+      h.unrealizedPnlPercent = h.costBasis ? (h.unrealizedPnl / h.costBasis) * 100 : 0;
+      if (h.previousClose) {
+        h.dayChange = round2(h.quantity * (px - h.previousClose));
+        h.dayChangePercent = ((px - h.previousClose) / h.previousClose) * 100;
+      }
+      h.priceStale = false;
+    }
+    p.holdingsValue = round2(p.holdings.reduce((s, h) => s + h.marketValue, 0));
+    p.totalValue = round2(p.cash + p.holdingsValue);
+    p.totalReturn = round2(p.totalValue - p.startingCash);
+    p.totalReturnPercent = p.startingCash ? (p.totalReturn / p.startingCash) * 100 : 0;
+    p.unrealizedPnl = round2(p.holdings.reduce((s, h) => s + h.unrealizedPnl, 0));
+    p.dayChange = round2(p.holdings.reduce((s, h) => s + h.dayChange, 0));
+    renderKpis(p);
+    // Weights shift for every row when any price moves, so patch them all.
+    for (const row of document.querySelectorAll("#holdings tr[data-sym]")) {
+      const h = p.holdings.find((x) => x.symbol === row.dataset.sym);
+      if (h) patchRow(row, holdingCells(h, p.totalValue), dirs[h.symbol]);
+    }
+  }
+
+  for (const w of state.watchlist) {
+    const px = live(w.symbol);
+    if (px == null) continue;
+    const dir = w.price == null ? 0 : Math.sign(px - w.price);
+    w.price = px;
+    if (w.previousClose) {
+      w.change = px - w.previousClose;
+      w.changePercent = (w.change / w.previousClose) * 100;
+    }
+    w.stale = false;
+    const row = document.querySelector(`#watchlist tr[data-sym="${CSS.escape(w.symbol)}"]`);
+    if (row) patchRow(row, watchCells(w), dir);
+  }
+
+  for (const o of state.orders?.open ?? []) {
+    const px = live(o.symbol);
+    if (px == null) continue;
+    const dir = o.currentPrice == null ? 0 : Math.sign(px - o.currentPrice);
+    o.currentPrice = px;
+    const row = document.querySelector(`#orders tr[data-id="${o.id}"]`);
+    if (row) patchRow(row, orderCells(o), dir);
+  }
+
+  const q = state.quote;
+  if (q && live(q.symbol) != null) {
+    const px = live(q.symbol);
+    const dir = Math.sign(px - q.price);
+    q.price = px;
+    q.change = px - q.previousClose;
+    q.changePercent = q.previousClose ? (q.change / q.previousClose) * 100 : 0;
+    q.stale = false;
+    paintQuote();
+    flash($("#q-price"), dir);
+    updateTicket(); // estimated total follows the price
   }
 }
 
@@ -469,18 +592,32 @@ function renderHoldings(p) {
     tbody.innerHTML = `<tr class="empty"><td colspan="9">No positions yet. Place an order to get started.</td></tr>`;
     return;
   }
-  tbody.innerHTML = p.holdings.map((h) => `
-    <tr>
+  tbody.innerHTML = p.holdings.map((h) => {
+    const c = holdingCells(h, p.totalValue);
+    return `
+    <tr data-sym="${esc(h.symbol)}">
       <td><div class="sym-cell">${logo(h.symbol, h.logo)}<div class="sym-text"><span class="sym">${esc(h.symbol)}</span>${h.priceStale ? `<span class="stale">stale</span>` : ""}<span class="co">${esc(h.name || h.sector)}</span></div></div></td>
       <td class="num">${shares.format(h.quantity)}</td>
       <td class="num">${usd.format(h.avgCost)}</td>
-      <td class="num">${usd.format(h.price)}</td>
-      <td class="num">${usd.format(h.marketValue)}</td>
-      <td class="num">${pnl(h.dayChange, h.dayChangePercent)}</td>
-      <td class="num">${pnl(h.unrealizedPnl, h.unrealizedPnlPercent)}</td>
-      <td class="num">${pct.format(p.totalValue ? h.marketValue / p.totalValue : 0)}</td>
+      <td class="num" data-f="price">${c.price}</td>
+      <td class="num" data-f="mv">${c.mv}</td>
+      <td class="num" data-f="day">${c.day}</td>
+      <td class="num" data-f="unreal">${c.unreal}</td>
+      <td class="num" data-f="weight">${c.weight}</td>
       <td class="num"><button class="btn xs" data-trade="${esc(h.symbol)}" data-side="Buy">Buy</button> <button class="btn xs" data-trade="${esc(h.symbol)}" data-side="Sell" data-qty="${h.quantity}">Sell</button></td>
-    </tr>`).join("");
+    </tr>`;
+  }).join("");
+}
+
+/** Cell contents shared by the full render and live patching. */
+function holdingCells(h, total) {
+  return {
+    price: usd.format(h.price),
+    mv: usd.format(h.marketValue),
+    day: pnl(h.dayChange, h.dayChangePercent),
+    unreal: pnl(h.unrealizedPnl, h.unrealizedPnlPercent),
+    weight: pct.format(total ? h.marketValue / total : 0),
+  };
 }
 
 /** Loads a symbol into the order form, e.g. from a Buy/Sell button. */
@@ -611,16 +748,16 @@ function renderOrders() {
       return;
     }
     body.innerHTML = open.map((o) => {
-      const dist = o.currentPrice ? (o.price - o.currentPrice) / o.currentPrice : null;
+      const c = orderCells(o);
       return `
-      <tr>
+      <tr data-sym="${esc(o.symbol)}" data-id="${o.id}">
         <td>${timeFmt.format(new Date(o.createdAt))}</td>
         <td><span class="side ${o.side === "Buy" ? "up" : "down"}">${o.side.toUpperCase()} · ${o.type.toUpperCase()}</span></td>
         <td class="sym">${esc(o.symbol)}</td>
         <td class="num">${shares.format(o.quantity)}</td>
         <td class="num">${usd.format(o.price)}</td>
-        <td class="num">${o.currentPrice ? usd.format(o.currentPrice) : `<span class="muted">—</span>`}</td>
-        <td class="num">${dist == null ? `<span class="muted">—</span>` : `${signed(dist, pct)} <span class="muted">away</span>`}</td>
+        <td class="num" data-f="price">${c.price}</td>
+        <td class="num" data-f="dist">${c.dist}</td>
         <td class="num"><button class="btn xs" data-cancel="${o.id}">Cancel</button></td>
       </tr>`;
     }).join("");
@@ -666,6 +803,14 @@ $("#orders").addEventListener("click", async (ev) => {
   }
 });
 
+function orderCells(o) {
+  const dist = o.currentPrice ? (o.price - o.currentPrice) / o.currentPrice : null;
+  return {
+    price: o.currentPrice ? usd.format(o.currentPrice) : `<span class="muted">—</span>`,
+    dist: dist == null ? `<span class="muted">—</span>` : `${signed(dist, pct)} <span class="muted">away</span>`,
+  };
+}
+
 // ---------- Watchlist ----------
 const isWatched = (sym) => state.watchlist.some((w) => w.symbol === sym);
 
@@ -677,15 +822,22 @@ function renderWatchlist() {
     tbody.innerHTML = `<tr class="empty"><td colspan="5">Nothing on your watchlist. Add a ticker above, or tap ☆ next to a quote in the order form.</td></tr>`;
   } else {
     tbody.innerHTML = list.map((w) => `
-    <tr>
+    <tr data-sym="${esc(w.symbol)}">
       <td><div class="sym-cell">${logo(w.symbol, w.logo)}<div class="sym-text"><button class="sym-link" type="button" data-trade="${esc(w.symbol)}" data-side="Buy" title="Open in order form">${esc(w.symbol)}</button>${w.stale ? `<span class="stale">${w.price == null ? "no quote" : "stale"}</span>` : ""}<span class="co">${esc(w.name || "")}</span></div></div></td>
-      <td class="num">${w.price == null ? `<span class="muted">—</span>` : usd.format(w.price)}</td>
-      <td class="num">${w.change == null ? `<span class="muted">—</span>` : pnl(w.change, w.changePercent)}</td>
+      <td class="num" data-f="price">${watchCells(w).price}</td>
+      <td class="num" data-f="change">${watchCells(w).change}</td>
       <td class="num">${w.heldQuantity ? shares.format(w.heldQuantity) : `<span class="muted">—</span>`}</td>
       <td class="num"><button class="btn xs" type="button" data-trade="${esc(w.symbol)}" data-side="Buy">Buy</button> <button class="btn xs icon" type="button" data-unwatch="${esc(w.symbol)}" aria-label="Remove ${esc(w.symbol)} from watchlist" title="Remove">✕</button></td>
     </tr>`).join("");
   }
   paintStar();
+}
+
+function watchCells(w) {
+  return {
+    price: w.price == null ? `<span class="muted">—</span>` : usd.format(w.price),
+    change: w.change == null ? `<span class="muted">—</span>` : pnl(w.change, w.changePercent),
+  };
 }
 
 function paintStar() {
@@ -855,8 +1007,7 @@ async function selectSymbol(sym) {
     prefillPrice(changed);
     $("#quote").hidden = false;
     $("#q-sym").textContent = q.symbol;
-    $("#q-price").textContent = usd.format(q.price) + (q.stale ? " (stale)" : "");
-    $("#q-change").innerHTML = pnl(q.change, q.changePercent) + ` <span class="muted">today</span>`;
+    paintQuote();
     if (changed) showCompany(q.symbol);
     paintStar();
     msg.textContent = "";
@@ -867,6 +1018,13 @@ async function selectSymbol(sym) {
     msg.textContent = e.message;
   }
   updateTicket();
+}
+
+function paintQuote() {
+  const q = state.quote;
+  if (!q) return;
+  $("#q-price").textContent = usd.format(q.price) + (q.stale ? " (stale)" : "");
+  $("#q-change").innerHTML = pnl(q.change, q.changePercent) + ` <span class="muted">today</span>`;
 }
 
 /** Name and logo for the quote box. Cached server-side after the first lookup of each symbol. */
@@ -1011,10 +1169,17 @@ $("#refresh").addEventListener("click", load);
 
 (async () => {
   try {
-    state.configured = (await api("/api/status")).finnhubConfigured;
+    const status = await api("/api/status");
+    state.configured = status.finnhubConfigured;
+    state.streaming = status.streaming;
   } catch { /* load() will surface errors */ }
   updateTicket();
   await load();
+  connectStream();
   setInterval(() => { if (!document.hidden) load(); }, REFRESH_MS);
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) return disconnectStream(); // no point streaming to a hidden tab
+    load();
+    connectStream();
+  });
 })();

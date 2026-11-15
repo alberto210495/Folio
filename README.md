@@ -22,13 +22,14 @@ The SQLite file `folio.db` is created on first run. The account starts with $100
 
 - **Orders** are market orders filled at Finnhub's latest price (`/quote`). Fractional shares are allowed, up to 4 decimals.
 - **Market hours:** trades only execute during the regular US session, 9:30 AM–4:00 PM ET on weekdays. Exchange holidays and 1:00 PM early closes (the day after Thanksgiving, Christmas Eve, July 3) are worked out from NYSE's published rules, so this needs no API calls; one-off closures announced at short notice aren't known. While the market is closed, market orders are refused and the top bar shows when it next opens. Limit and stop orders can still be placed; one that's already marketable waits for the open instead of filling on the last close. To trade around the clock at the last price, set `Folio:EnforceMarketHours` to `false`.
-- **Limit and stop orders** stay open until filled or cancelled. During market hours a background job checks them against live prices every 60 seconds (`Folio:OrderCheckSeconds`). When the condition is met, the order fills at the market price seen at that check:
+- **Live prices:** Folio keeps one websocket open to Finnhub (the free tier allows one connection and 50 symbols) and streams trade prices for your holdings, open orders, SPY, your watchlist and the symbol in the order form, in that order of priority. The page receives them about once a second over server-sent events (`/api/stream`), so your API key never reaches the browser. Prices update in place with a brief green or red flash, and a **Live** badge shows in the top bar while the market is open. Streamed prices are layered over the REST quote everywhere: valuations, market orders and order fills all use the latest trade. Prints outside regular hours are ignored unless `Folio:EnforceMarketHours` is off. If the stream drops, Folio reconnects with backoff and falls back to the 15-second REST quotes meanwhile. Set `Finnhub:Streaming` to `false` to turn streaming off.
+- **Limit and stop orders** stay open until filled or cancelled. During market hours an order is checked as soon as a streamed trade crosses its price, and every 60 seconds as a fallback (`Folio:OrderCheckSeconds`). When the condition is met, the order fills at that market price:
   - Buy limit: fills when the price is at or below the limit.
   - Sell limit: fills when the price is at or above the limit.
   - Buy stop: fills when the price rises to the stop or higher.
   - Sell stop (stop-loss): fills when the price falls to the stop or lower.
 
-  A limit that can already fill when you place it fills immediately. A stop that would trigger immediately is refused. New orders can't commit more cash or shares than you have once other open orders are counted, but nothing is reserved: market orders can spend it, in which case the resting order is rejected when it triggers. A price that crosses your trigger and comes back between two checks won't fill.
+  A limit that can already fill when you place it fills immediately. A stop that would trigger immediately is refused. New orders can't commit more cash or shares than you have once other open orders are counted, but nothing is reserved: market orders can spend it, in which case the resting order is rejected when it triggers. With live prices on, a trade that crosses your price fills the order even if the price comes straight back; without them (streaming off or disconnected), a price that crosses and returns between two 60-second checks won't fill.
 - **Watchlist:** follow up to 25 symbols you don't hold, with live price and today's change. Add a ticker in the Watchlist card, or tap ☆ next to a quote in the order form. Tap a symbol or **Buy** to load it into the order form. Resetting the account keeps your watchlist.
 - **CSV export:** **Export CSV** on Holdings, Orders and Trade history downloads that table in full (every trade and order, not just what's on screen). Times are UTC in ISO 8601, numbers use `.` as the decimal point, and the holdings file ends with a `CASH` row. Text that a spreadsheet could run as a formula (starting with `=`, `+`, `-` or `@`) gets a leading `'`.
 - **Trade history** is paged on the server, 25 trades per page by default (50 or 100 if you choose; the page remembers your choice). Placing a trade jumps back to page 1 so you see it. **Export CSV** still downloads every trade.
@@ -43,6 +44,7 @@ The SQLite file `folio.db` is created on first run. The account starts with $100
 
 | Method | Path | Notes |
 | --- | --- | --- |
+| GET | `/api/stream` | Server-sent events: `status` (`{ connected }`) and `prices` (`{ "AAPL": { p, t } }`), at most once a second |
 | GET | `/api/market` | Whether the US market is open, when it closes or next opens, and the reason it's closed |
 | GET | `/api/portfolio` | Cash, holdings with live P&L, totals |
 | POST | `/api/trades` | `{ "symbol": "AAPL", "side": "Buy" \| "Sell", "quantity": 10 }` |
@@ -70,7 +72,7 @@ Errors return `{ "error": "..." }`: 400 for rejected orders, 429 or 503 for Finn
 dotnet test Folio.slnx
 ```
 
-xUnit tests in `tests/Folio.Tests` cover trading (average cost, realized P&L, rounding, rejections), market hours (NYSE holidays, early closes, daylight saving, closed-market trading), limit and stop orders (trigger rules, fills, commitments, cancels, stale prices), company profiles and logos, the watchlist, trade history paging, CSV export (quoting, formula escaping, locale), reset, valuation, snapshots and the benchmark maths. They use a fake Finnhub and an in-memory SQLite database with the real migrations, so they need neither an API key nor a network connection.
+xUnit tests in `tests/Folio.Tests` cover trading (average cost, realized P&L, rounding, rejections), live prices (merging ticks into quotes, message parsing, subscriptions, the event stream, tick-triggered fills), market hours (NYSE holidays, early closes, daylight saving, closed-market trading), limit and stop orders (trigger rules, fills, commitments, cancels, stale prices), company profiles and logos, the watchlist, trade history paging, CSV export (quoting, formula escaping, locale), reset, valuation, snapshots and the benchmark maths. They use a fake Finnhub and an in-memory SQLite database with the real migrations, so they need neither an API key nor a network connection. One optional test connects to the real Finnhub websocket when a `FINNHUB_KEY` environment variable is set; it streams a crypto pair, so it works even when US markets are closed.
 
 ## Notes
 

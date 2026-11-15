@@ -20,6 +20,11 @@ builder.Services.AddHttpClient<FinnhubClient>((sp, http) =>
 });
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<MarketClock>();
+builder.Services.AddSingleton(sp => new LivePrices(
+    sp.GetRequiredService<TimeProvider>(),
+    regularHoursOnly: sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<FolioOptions>>().Value.EnforceMarketHours));
+builder.Services.AddSingleton<IStreamSymbols, DbStreamSymbols>();
+builder.Services.AddHostedService<FinnhubStream>();
 builder.Services.AddScoped<TradingService>();
 builder.Services.AddScoped<PortfolioService>();
 builder.Services.AddScoped<SnapshotService>();
@@ -66,9 +71,13 @@ app.UseStaticFiles();
 
 var api = app.MapGroup("/api");
 
-api.MapGet("/status", (FinnhubClient f) => new { finnhubConfigured = f.IsConfigured });
+api.MapGet("/status", (FinnhubClient f, LivePrices live, Microsoft.Extensions.Options.IOptions<FinnhubOptions> o) =>
+    new { finnhubConfigured = f.IsConfigured, streaming = f.IsConfigured && o.Value.Streaming, streamConnected = live.Connected });
 
 api.MapGet("/market", (MarketClock m) => m.Status());
+
+// Live prices for the page, pushed as server-sent events (see LivePrices.StreamAsync).
+api.MapGet("/stream", (LivePrices live, CancellationToken ct) => TypedResults.ServerSentEvents(live.StreamAsync(ct)));
 
 api.MapGet("/portfolio", (PortfolioService p, CancellationToken ct) => p.GetAsync(ct));
 
@@ -85,9 +94,10 @@ api.MapGet("/trades", (int? page, int? pageSize, TradeHistoryService h, Cancella
 api.MapGet("/orders", (string? status, int? limit, OrderService o, CancellationToken ct) =>
     o.ListAsync(status, limit ?? 100, ct));
 
-api.MapPost("/orders", async (PlaceOrderRequest req, OrderService o, SnapshotService s, CancellationToken ct) =>
+api.MapPost("/orders", async (PlaceOrderRequest req, OrderService o, SnapshotService s, LivePrices live, CancellationToken ct) =>
 {
     var order = await o.PlaceAsync(req, ct);
+    live.RequestResync(); // stream the order's symbol so it can trigger on the next tick
     if (order.Status == OrderStatus.Filled)
         try { await s.RecordAsync(ct); } catch (FinnhubException) { /* best-effort */ }
     return Results.Created($"/api/orders/{order.Id}", order);
@@ -95,18 +105,20 @@ api.MapPost("/orders", async (PlaceOrderRequest req, OrderService o, SnapshotSer
 
 api.MapDelete("/orders/{id:int}", (int id, OrderService o, CancellationToken ct) => o.CancelAsync(id, ct));
 
-api.MapPost("/trades", async (TradeRequest req, TradingService t, SnapshotService s, CancellationToken ct) =>
+api.MapPost("/trades", async (TradeRequest req, TradingService t, SnapshotService s, LivePrices live, CancellationToken ct) =>
 {
     var trade = await t.ExecuteAsync(req, ct);
+    live.RequestResync();
     try { await s.RecordAsync(ct); } catch (FinnhubException) { /* chart point is best-effort */ }
     return Results.Created("/api/trades", trade);
 });
 
 api.MapGet("/watchlist", (WatchlistService w, CancellationToken ct) => w.ListAsync(ct));
 
-api.MapPost("/watchlist", async (WatchlistAddRequest req, WatchlistService w, CancellationToken ct) =>
+api.MapPost("/watchlist", async (WatchlistAddRequest req, WatchlistService w, LivePrices live, CancellationToken ct) =>
 {
     var item = await w.AddAsync(req.Symbol, ct);
+    live.RequestResync();
     return Results.Created($"/api/watchlist/{item.Symbol}", item);
 });
 
@@ -125,9 +137,11 @@ api.MapGet("/export/orders.csv", async (ExportService e, CancellationToken ct) =
 
 api.MapGet("/history", (string? range, SnapshotService s, CancellationToken ct) => s.GetHistoryAsync(range, ct));
 
-api.MapGet("/quote/{symbol}", async (string symbol, FinnhubClient f, CancellationToken ct) =>
+api.MapGet("/quote/{symbol}", async (string symbol, FinnhubClient f, LivePrices live, CancellationToken ct) =>
 {
-    var quote = await f.GetQuoteAsync(TradingService.NormalizeSymbol(symbol), ct);
+    var sym = TradingService.NormalizeSymbol(symbol);
+    var quote = await f.GetQuoteAsync(sym, ct);
+    if (quote is not null) live.Touch(sym); // stream it while it's in the order form
     return quote is null ? Results.NotFound(new { error = $"No quote for {symbol.ToUpperInvariant()}." }) : Results.Ok(quote);
 });
 

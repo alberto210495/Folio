@@ -16,6 +16,7 @@
     </div>
     <div class="topbar-right">
       <span id="market" class="market small" hidden></span>
+      <span id="live" class="live small" hidden aria-live="polite"></span>
       <span id="updated" class="muted small" aria-live="polite"></span>
       <button id="refresh" class="btn ghost" type="button" title="Refresh quotes">Refresh</button>
       <button id="reset" class="btn ghost" type="button">Reset account</button>
@@ -198,7 +199,7 @@
           <tbody id="orders"></tbody>
         </table>
       </div>
-      <p class="muted small orders-note">Limit and stop orders stay open until filled or cancelled. Folio checks them against live prices about once a minute during market hours (9:30 AM–4:00 PM ET on trading days) while it's running, and fills at the price it sees then. Cash and shares aren't reserved, so an order is rejected if you no longer have enough when it triggers.</p>
+      <p class="muted small orders-note">Limit and stop orders stay open until filled or cancelled. While Folio is running during market hours (9:30 AM–4:00 PM ET on trading days), an order fills on the first live trade that crosses its price, at that trade's price. It's also checked at least once a minute. Cash and shares aren't reserved, so an order is rejected if you no longer have enough when it triggers.</p>
     </section>
 
     <section class="card" aria-labelledby="trades-h">

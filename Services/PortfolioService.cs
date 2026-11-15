@@ -17,6 +17,7 @@ public record HoldingView(
     decimal UnrealizedPnlPercent,
     decimal DayChange,
     decimal DayChangePercent,
+    decimal? PreviousClose,
     bool PriceStale);
 
 public record PortfolioView(
@@ -75,6 +76,7 @@ public class PortfolioService(FolioDb db, FinnhubClient finnhub)
                 cost == 0 ? 0 : Round((value - cost) / cost * 100),
                 Round(dayChange),
                 q?.ChangePercent ?? 0,
+                q?.PreviousClose,
                 PriceStale: q is null || q.Stale);
         })
         .OrderByDescending(h => h.MarketValue)
