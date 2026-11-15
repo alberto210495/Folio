@@ -8,6 +8,9 @@ public class FolioOptions
 {
     /// <summary>Ticker the portfolio is compared against. SPY tracks the S&amp;P 500.</summary>
     public string BenchmarkSymbol { get; set; } = "SPY";
+
+    /// <summary>How often open limit/stop orders are checked against live prices (min 15).</summary>
+    public int OrderCheckSeconds { get; set; } = 60;
 }
 
 /// <param name="T">Time (UTC).</param>

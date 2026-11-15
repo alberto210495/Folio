@@ -86,6 +86,21 @@
             <div id="q-change" class="small"></div>
           </div>
 
+          <div class="field">
+            <span id="otype-label">Order type</span>
+            <div class="seg seg3" role="radiogroup" aria-labelledby="otype-label">
+              <label><input type="radio" name="otype" value="Market" checked><span>Market</span></label>
+              <label><input type="radio" name="otype" value="Limit"><span>Limit</span></label>
+              <label><input type="radio" name="otype" value="Stop"><span>Stop</span></label>
+            </div>
+          </div>
+
+          <label class="field" id="price-field" hidden>
+            <span id="price-label">Limit price</span>
+            <input id="price" name="price" type="number" min="0.0001" step="any" inputmode="decimal" placeholder="0.00">
+          </label>
+          <p id="order-hint" class="small muted hint" hidden></p>
+
           <label class="field">
             <span>Shares</span>
             <input id="qty" name="qty" type="number" min="0.0001" step="any" inputmode="decimal" placeholder="0">
@@ -134,6 +149,23 @@
       </div>
     </section>
 
+    <section class="card" aria-labelledby="orders-h">
+      <div class="card-head">
+        <h2 id="orders-h">Orders</h2>
+        <div class="tabs" role="tablist" aria-label="Order status">
+          <button role="tab" aria-selected="true" data-orders="open">Open <span id="open-count"></span></button>
+          <button role="tab" aria-selected="false" data-orders="closed">History</button>
+        </div>
+      </div>
+      <div class="table-scroll">
+        <table class="data">
+          <thead id="orders-head"></thead>
+          <tbody id="orders"></tbody>
+        </table>
+      </div>
+      <p class="muted small orders-note">Limit and stop orders stay open until filled or cancelled. Folio checks them against live prices about once a minute while it's running, and fills at the price it sees then. Cash and shares aren't reserved, so an order is rejected if you no longer have enough when it triggers.</p>
+    </section>
+
     <section class="card" aria-labelledby="trades-h">
       <h2 id="trades-h">Trade history</h2>
       <div class="table-scroll">
@@ -148,6 +180,8 @@
 
     <p class="muted small foot">Simulated trades at Finnhub's latest price. Quotes may be delayed. Not investment advice.</p>
   </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
   <dialog id="reset-dlg">
     <form method="dialog" class="dlg">

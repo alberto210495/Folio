@@ -21,6 +21,13 @@ The SQLite file `folio.db` is created on first run. The account starts with $100
 ## How it works
 
 - **Orders** are market orders filled at Finnhub's latest price (`/quote`). Fractional shares are allowed, up to 4 decimals.
+- **Limit and stop orders** stay open until filled or cancelled. A background job checks them against live prices every 60 seconds (`Folio:OrderCheckSeconds`). When the condition is met, the order fills at the market price seen at that check:
+  - Buy limit: fills when the price is at or below the limit.
+  - Sell limit: fills when the price is at or above the limit.
+  - Buy stop: fills when the price rises to the stop or higher.
+  - Sell stop (stop-loss): fills when the price falls to the stop or lower.
+
+  A limit that can already fill when you place it fills immediately. A stop that would trigger immediately is refused. New orders can't commit more cash or shares than you have once other open orders are counted, but nothing is reserved: market orders can spend it, in which case the resting order is rejected when it triggers. A price that crosses your trigger and comes back between two checks won't fill.
 - **Cost basis** is the weighted average. Selling books realized P&L = (fill − avg cost) × shares.
 - **Unrealized P&L** and **Today** use live quotes. Total return = (cash + holdings) − starting cash.
 - **Sector** comes from Finnhub's `/stock/profile2` and is cached in the `Companies` table on first buy. ETFs have no profile on the free tier, so they show as "Other".
@@ -34,7 +41,10 @@ The SQLite file `folio.db` is created on first run. The account starts with $100
 | --- | --- | --- |
 | GET | `/api/portfolio` | Cash, holdings with live P&L, totals |
 | POST | `/api/trades` | `{ "symbol": "AAPL", "side": "Buy" \| "Sell", "quantity": 10 }` |
-| GET | `/api/trades?limit=100` | Trade history, newest first |
+| GET | `/api/trades?limit=100` | Trade history, newest first; `orderType` is `Market`, `Limit` or `Stop` |
+| POST | `/api/orders` | `{ "symbol": "AAPL", "side": "Buy", "type": "Limit" \| "Stop", "quantity": 10, "price": 190 }` |
+| GET | `/api/orders?status=open` | `status` is `open`, `closed` or `all`; open orders include `currentPrice` |
+| DELETE | `/api/orders/{id}` | Cancel an open order |
 | GET | `/api/history?range=1M` | Value snapshots; range is `1D`, `1W`, `1M`, `3M`, `1Y` or `ALL` (max 400 points) |
 | GET | `/api/quote/{symbol}` | Cached live quote |
 | GET | `/api/search?q=apple` | US symbol search |
@@ -48,7 +58,7 @@ Errors return `{ "error": "..." }`: 400 for rejected orders, 429 or 503 for Finn
 dotnet test Folio.slnx
 ```
 
-xUnit tests in `tests/Folio.Tests` cover trading (average cost, realized P&L, rounding, rejections), reset, valuation, snapshots and the benchmark maths. They use a fake Finnhub and an in-memory SQLite database with the real migrations, so they need neither an API key nor a network connection.
+xUnit tests in `tests/Folio.Tests` cover trading (average cost, realized P&L, rounding, rejections), limit and stop orders (trigger rules, fills, commitments, cancels, stale prices), reset, valuation, snapshots and the benchmark maths. They use a fake Finnhub and an in-memory SQLite database with the real migrations, so they need neither an API key nor a network connection.
 
 ## Notes
 

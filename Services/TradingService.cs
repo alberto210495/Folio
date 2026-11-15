@@ -27,28 +27,49 @@ public partial class TradingService(FolioDb db, FinnhubClient finnhub, ILogger<T
     public async Task<Trade> ExecuteAsync(TradeRequest request, CancellationToken ct = default)
     {
         var symbol = NormalizeSymbol(request.Symbol);
-        var qty = request.Quantity;
+        var qty = ValidateQuantity(request.Quantity);
+        var quote = await LiveQuoteAsync(symbol, ct);
+        return await FillAsync(symbol, request.Side, qty, quote.Price, ct: ct);
+    }
+
+    public static decimal ValidateQuantity(decimal qty)
+    {
         if (qty <= 0) throw new TradeRejectedException("Quantity must be greater than zero.");
         if (decimal.Round(qty, 4) != qty) throw new TradeRejectedException("Quantity supports at most 4 decimal places.");
+        return qty;
+    }
 
+    /// <summary>A fresh, tradable quote, or a <see cref="TradeRejectedException"/> explaining why not.</summary>
+    public async Task<Quote> LiveQuoteAsync(string symbol, CancellationToken ct = default)
+    {
         var quote = await finnhub.GetQuoteAsync(symbol, ct)
             ?? throw new TradeRejectedException($"No quote found for {symbol}.");
         if (quote.Stale)
             throw new TradeRejectedException("Live price is unavailable right now (Finnhub rate limit or outage). Try again shortly.");
         if (quote.Price <= 0)
             throw new TradeRejectedException($"{symbol} has no tradable price.");
+        return quote;
+    }
 
+    /// <summary>
+    /// Books a fill at <paramref name="price"/>. <paramref name="beforeSave"/> runs inside the same
+    /// transaction (used to mark a resting order filled atomically with its trade).
+    /// </summary>
+    public async Task<Trade> FillAsync(
+        string symbol, TradeSide side, decimal qty, decimal price,
+        int? orderId = null, Action<Trade>? beforeSave = null, CancellationToken ct = default)
+    {
         await TradeLock.WaitAsync(ct);
         try
         {
             await using var tx = await db.Database.BeginTransactionAsync(ct);
             var account = await db.GetAccountAsync(ct);
             var position = await db.Positions.SingleOrDefaultAsync(p => p.Symbol == symbol, ct);
-            var notional = Money(qty * quote.Price);
+            var notional = Money(qty * price);
 
-            var trade = new Trade { Symbol = symbol, Side = request.Side, Quantity = qty, Price = quote.Price };
+            var trade = new Trade { Symbol = symbol, Side = side, Quantity = qty, Price = price, OrderId = orderId };
 
-            if (request.Side == TradeSide.Buy)
+            if (side == TradeSide.Buy)
             {
                 if (notional > account.Cash)
                     throw new TradeRejectedException($"Insufficient cash: order costs {Usd(notional)}, you have {Usd(account.Cash)}.");
@@ -56,12 +77,12 @@ public partial class TradingService(FolioDb db, FinnhubClient finnhub, ILogger<T
                 account.Cash -= notional;
                 if (position is null)
                 {
-                    db.Positions.Add(new Position { Symbol = symbol, Quantity = qty, AvgCost = quote.Price });
+                    db.Positions.Add(new Position { Symbol = symbol, Quantity = qty, AvgCost = price });
                 }
                 else
                 {
                     var newQty = position.Quantity + qty;
-                    position.AvgCost = (position.Quantity * position.AvgCost + qty * quote.Price) / newQty;
+                    position.AvgCost = (position.Quantity * position.AvgCost + qty * price) / newQty;
                     position.Quantity = newQty;
                 }
             }
@@ -70,7 +91,7 @@ public partial class TradingService(FolioDb db, FinnhubClient finnhub, ILogger<T
                 if (position is null || position.Quantity < qty)
                     throw new TradeRejectedException($"You only hold {position?.Quantity ?? 0:0.####} shares of {symbol}.");
 
-                var realized = Money((quote.Price - position.AvgCost) * qty);
+                var realized = Money((price - position.AvgCost) * qty);
                 trade.RealizedPnl = realized;
                 account.RealizedPnl += realized;
                 account.Cash += notional;
@@ -79,10 +100,11 @@ public partial class TradingService(FolioDb db, FinnhubClient finnhub, ILogger<T
             }
 
             db.Trades.Add(trade);
+            beforeSave?.Invoke(trade);
             await db.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
 
-            if (request.Side == TradeSide.Buy) await EnsureCompanyAsync(symbol, ct);
+            if (side == TradeSide.Buy) await EnsureCompanyAsync(symbol, ct);
             return trade;
         }
         finally
@@ -103,6 +125,7 @@ public partial class TradingService(FolioDb db, FinnhubClient finnhub, ILogger<T
             await db.Trades.ExecuteDeleteAsync(ct);
             await db.Positions.ExecuteDeleteAsync(ct);
             await db.Snapshots.ExecuteDeleteAsync(ct);
+            await db.Orders.ExecuteDeleteAsync(ct);
             var account = await db.GetAccountAsync(ct);
             account.StartingCash = account.Cash = Money(startingCash);
             account.RealizedPnl = 0;

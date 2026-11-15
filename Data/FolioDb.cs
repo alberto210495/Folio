@@ -12,6 +12,7 @@ public class FolioDb(DbContextOptions<FolioDb> options) : DbContext(options)
     public DbSet<Trade> Trades => Set<Trade>();
     public DbSet<Company> Companies => Set<Company>();
     public DbSet<PortfolioSnapshot> Snapshots => Set<PortfolioSnapshot>();
+    public DbSet<Order> Orders => Set<Order>();
 
     // SQLite has no timezone-aware type; everything is stored as UTC, so mark it UTC on the way out.
     protected override void ConfigureConventions(ModelConfigurationBuilder c) =>
@@ -34,6 +35,14 @@ public class FolioDb(DbContextOptions<FolioDb> options) : DbContext(options)
         b.Entity<Company>().Property(c => c.Symbol).HasMaxLength(20);
 
         b.Entity<PortfolioSnapshot>().HasIndex(s => s.TakenAt);
+
+        b.Entity<Trade>().HasIndex(t => t.OrderId);
+        b.Entity<Order>().HasIndex(o => o.Status);
+        b.Entity<Order>().Property(o => o.Symbol).HasMaxLength(20);
+        b.Entity<Order>().Property(o => o.Side).HasConversion<string>().HasMaxLength(4);
+        b.Entity<Order>().Property(o => o.Type).HasConversion<string>().HasMaxLength(5);
+        b.Entity<Order>().Property(o => o.Status).HasConversion<string>().HasMaxLength(9);
+        b.Entity<Order>().Property(o => o.Reason).HasMaxLength(300);
     }
 
     public async Task<Account> GetAccountAsync(CancellationToken ct = default)

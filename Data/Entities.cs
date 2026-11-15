@@ -35,6 +35,8 @@ public class Trade
     public decimal Price { get; set; }
     /// <summary>Set on sells: (price - avg cost) × quantity.</summary>
     public decimal? RealizedPnl { get; set; }
+    /// <summary>The resting order this fill came from; null for market orders.</summary>
+    public int? OrderId { get; set; }
     public DateTime ExecutedAt { get; set; } = DateTime.UtcNow;
 }
 
@@ -58,4 +60,29 @@ public class PortfolioSnapshot
     public decimal HoldingsValue { get; set; }
     /// <summary>Benchmark (SPY) price at the same moment, when it was available.</summary>
     public decimal? BenchmarkPrice { get; set; }
+}
+
+public enum OrderType { Limit, Stop }
+
+public enum OrderStatus { Open, Filled, Cancelled, Rejected }
+
+/// <summary>
+/// A resting limit or stop order, good until cancelled. Checked against live quotes by
+/// <c>OrderWorker</c>; fills at the market price at the moment the condition is seen.
+/// </summary>
+public class Order
+{
+    public int Id { get; set; }
+    public required string Symbol { get; set; }
+    public TradeSide Side { get; set; }
+    public OrderType Type { get; set; }
+    public decimal Quantity { get; set; }
+    /// <summary>Limit price or stop (trigger) price.</summary>
+    public decimal Price { get; set; }
+    public OrderStatus Status { get; set; } = OrderStatus.Open;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? ClosedAt { get; set; }
+    public decimal? FillPrice { get; set; }
+    /// <summary>Why the order was rejected at fill time (e.g. not enough cash by then).</summary>
+    public string? Reason { get; set; }
 }

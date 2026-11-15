@@ -73,6 +73,7 @@ public sealed class TestApp : IDisposable
         public TradingService Trading { get; }
         public PortfolioService Portfolio { get; }
         public SnapshotService Snapshots { get; }
+        public OrderService Orders { get; }
 
         internal Scope(TestApp app)
         {
@@ -86,7 +87,11 @@ public sealed class TestApp : IDisposable
             Trading = new TradingService(Db, Finnhub, NullLogger<TradingService>.Instance);
             Portfolio = new PortfolioService(Db, Finnhub);
             Snapshots = new SnapshotService(Db, Portfolio, Finnhub, Options.Create(new FolioOptions()));
+            Orders = new OrderService(Db, Trading, Finnhub, NullLogger<OrderService>.Instance);
         }
+
+        public Task<OrderView> Place(string symbol, TradeSide side, OrderType type, decimal qty, decimal price) =>
+            Orders.PlaceAsync(new(symbol, side, type, qty, price));
 
         public Task<Trade> Buy(string symbol, decimal qty) => Trading.ExecuteAsync(new(symbol, TradeSide.Buy, qty));
         public Task<Trade> Sell(string symbol, decimal qty) => Trading.ExecuteAsync(new(symbol, TradeSide.Sell, qty));

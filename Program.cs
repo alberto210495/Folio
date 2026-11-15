@@ -22,6 +22,8 @@ builder.Services.AddScoped<TradingService>();
 builder.Services.AddScoped<PortfolioService>();
 builder.Services.AddScoped<SnapshotService>();
 builder.Services.AddHostedService<SnapshotWorker>();
+builder.Services.AddScoped<OrderService>();
+builder.Services.AddHostedService<OrderWorker>();
 
 builder.Services.ConfigureHttpJsonOptions(o =>
     o.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
@@ -71,10 +73,34 @@ api.MapPost("/portfolio/reset", async (ResetRequest req, TradingService t, Snaps
 });
 
 api.MapGet("/trades", async (FolioDb db, int? limit, CancellationToken ct) =>
-    await db.Trades.AsNoTracking()
+{
+    var trades = await db.Trades.AsNoTracking()
         .OrderByDescending(t => t.ExecutedAt)
         .Take(Math.Clamp(limit ?? 100, 1, 1000))
-        .ToListAsync(ct));
+        .ToListAsync(ct);
+    var orderIds = trades.Where(t => t.OrderId != null).Select(t => t.OrderId!.Value).Distinct().ToList();
+    var types = await db.Orders.AsNoTracking()
+        .Where(o => orderIds.Contains(o.Id))
+        .ToDictionaryAsync(o => o.Id, o => o.Type, ct);
+    return trades.Select(t => new
+    {
+        t.Id, t.Symbol, t.Side, t.Quantity, t.Price, t.RealizedPnl, t.ExecutedAt, t.OrderId,
+        OrderType = t.OrderId is int id && types.TryGetValue(id, out var type) ? type.ToString() : "Market",
+    });
+});
+
+api.MapGet("/orders", (string? status, int? limit, OrderService o, CancellationToken ct) =>
+    o.ListAsync(status, limit ?? 100, ct));
+
+api.MapPost("/orders", async (PlaceOrderRequest req, OrderService o, SnapshotService s, CancellationToken ct) =>
+{
+    var order = await o.PlaceAsync(req, ct);
+    if (order.Status == OrderStatus.Filled)
+        try { await s.RecordAsync(ct); } catch (FinnhubException) { /* best-effort */ }
+    return Results.Created($"/api/orders/{order.Id}", order);
+});
+
+api.MapDelete("/orders/{id:int}", (int id, OrderService o, CancellationToken ct) => o.CancelAsync(id, ct));
 
 api.MapPost("/trades", async (TradeRequest req, TradingService t, SnapshotService s, CancellationToken ct) =>
 {
