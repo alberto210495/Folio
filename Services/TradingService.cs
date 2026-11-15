@@ -140,25 +140,35 @@ public partial class TradingService(FolioDb db, FinnhubClient finnhub, ILogger<T
         }
     }
 
-    /// <summary>Best-effort: cache name/industry for the sector chart. Failure never blocks a trade.</summary>
-    public async Task EnsureCompanyAsync(string symbol, CancellationToken ct)
+    /// <summary>
+    /// Best-effort: cache name, industry and logo (one Finnhub call per symbol, ever). Returns null if
+    /// Finnhub couldn't be reached; it's retried next time. Failure never blocks a trade.
+    /// </summary>
+    public async Task<Company?> EnsureCompanyAsync(string symbol, CancellationToken ct)
     {
+        Company? company = null;
         try
         {
-            if (await db.Companies.AnyAsync(c => c.Symbol == symbol, ct)) return;
+            var existing = await db.Companies.AsNoTracking().FirstOrDefaultAsync(c => c.Symbol == symbol, ct);
+            if (existing is not null) return existing;
             var profile = await finnhub.GetProfileAsync(symbol, ct);
-            db.Companies.Add(new Company
+            company = new Company
             {
                 Symbol = symbol,
                 Name = profile?.Name,
                 Industry = profile?.Industry,
                 Logo = profile?.Logo,
-            });
+            };
+            db.Companies.Add(company);
             await db.SaveChangesAsync(ct);
+            return company;
         }
         catch (Exception ex) when (ex is FinnhubException or DbUpdateException)
         {
             log.LogInformation("Skipped profile for {Symbol}: {Message}", symbol, ex.Message);
+            // Only drop our own row: callers (the order worker) may still have tracked orders to save.
+            if (company is not null) db.Entry(company).State = EntityState.Detached;
+            return null;
         }
     }
 

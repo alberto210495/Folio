@@ -140,6 +140,14 @@ api.MapGet("/quote/{symbol}", async (string symbol, FinnhubClient f, Cancellatio
     return quote is null ? Results.NotFound(new { error = $"No quote for {symbol.ToUpperInvariant()}." }) : Results.Ok(quote);
 });
 
+// Name and logo for the order form. Fetched from Finnhub once per symbol, then served from the database.
+api.MapGet("/company/{symbol}", async (string symbol, TradingService t, CancellationToken ct) =>
+{
+    var s = TradingService.NormalizeSymbol(symbol);
+    var c = await t.EnsureCompanyAsync(s, ct);
+    return new { symbol = s, name = c?.Name, industry = c?.Industry, logo = FinnhubClient.SafeLogo(c?.Logo) };
+});
+
 api.MapGet("/search", async (string q, FinnhubClient f, CancellationToken ct) =>
     string.IsNullOrWhiteSpace(q) || q.Length > 30 ? Results.Ok(Array.Empty<SymbolMatch>()) : Results.Ok(await f.SearchAsync(q.Trim(), ct)));
 

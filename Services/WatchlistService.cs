@@ -9,6 +9,7 @@ public record WatchlistAddRequest(string Symbol);
 public record WatchItemView(
     string Symbol,
     string? Name,
+    string? Logo,
     decimal? Price,
     decimal? Change,
     decimal? ChangePercent,
@@ -71,9 +72,9 @@ public class WatchlistService(FolioDb db, FinnhubClient finnhub, TradingService 
     private async Task<IReadOnlyList<WatchItemView>> ViewsAsync(IReadOnlyList<WatchlistItem> items, CancellationToken ct)
     {
         var symbols = items.Select(i => i.Symbol).ToList();
-        var names = await db.Companies.AsNoTracking()
+        var companies = await db.Companies.AsNoTracking()
             .Where(c => symbols.Contains(c.Symbol))
-            .ToDictionaryAsync(c => c.Symbol, c => c.Name, ct);
+            .ToDictionaryAsync(c => c.Symbol, ct);
         var held = await db.Positions.AsNoTracking()
             .Where(p => symbols.Contains(p.Symbol))
             .ToDictionaryAsync(p => p.Symbol, p => p.Quantity, ct);
@@ -87,9 +88,11 @@ public class WatchlistService(FolioDb db, FinnhubClient finnhub, TradingService 
         return items.Select((i, n) =>
         {
             var q = quotes[n];
+            var co = companies.GetValueOrDefault(i.Symbol);
             return new WatchItemView(
                 i.Symbol,
-                names.GetValueOrDefault(i.Symbol),
+                co?.Name,
+                FinnhubClient.SafeLogo(co?.Logo),
                 q?.Price,
                 q?.Change,
                 q?.ChangePercent,

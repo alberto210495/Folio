@@ -26,6 +26,25 @@ function pnl(v, p) {
   return `<span class="${tone(v)}">${arrow(v)}${signed(v)}${pctPart}</span>`;
 }
 
+// Company logo on a white tile, or the first letter when there's no logo or it fails to load.
+const failedLogos = new Set();
+function logo(sym, url) {
+  const letter = esc((sym || "?")[0]);
+  return url && url.startsWith("https://") && !failedLogos.has(url)
+    ? `<span class="co-logo"><img src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer" data-letter="${letter}"></span>`
+    : `<span class="co-logo mono" aria-hidden="true">${letter}</span>`;
+}
+// Image errors don't bubble, so listen in the capture phase.
+document.addEventListener("error", (ev) => {
+  const img = ev.target;
+  if (!(img instanceof HTMLImageElement) || !img.parentElement?.classList.contains("co-logo")) return;
+  failedLogos.add(img.getAttribute("src"));
+  const box = img.parentElement;
+  box.classList.add("mono");
+  box.setAttribute("aria-hidden", "true");
+  box.textContent = img.dataset.letter;
+}, true);
+
 async function api(path, opts = {}) {
   const res = await fetch(path, {
     ...opts,
@@ -416,7 +435,7 @@ function renderHoldings(p) {
   }
   tbody.innerHTML = p.holdings.map((h) => `
     <tr>
-      <td><span class="sym">${esc(h.symbol)}</span>${h.priceStale ? `<span class="stale">stale</span>` : ""}<span class="co">${esc(h.name || h.sector)}</span></td>
+      <td><div class="sym-cell">${logo(h.symbol, h.logo)}<div class="sym-text"><span class="sym">${esc(h.symbol)}</span>${h.priceStale ? `<span class="stale">stale</span>` : ""}<span class="co">${esc(h.name || h.sector)}</span></div></div></td>
       <td class="num">${shares.format(h.quantity)}</td>
       <td class="num">${usd.format(h.avgCost)}</td>
       <td class="num">${usd.format(h.price)}</td>
@@ -570,7 +589,7 @@ function renderWatchlist() {
   } else {
     tbody.innerHTML = list.map((w) => `
     <tr>
-      <td><button class="sym-link" type="button" data-trade="${esc(w.symbol)}" data-side="Buy" title="Open in order form">${esc(w.symbol)}</button>${w.stale ? `<span class="stale">${w.price == null ? "no quote" : "stale"}</span>` : ""}<span class="co">${esc(w.name || "")}</span></td>
+      <td><div class="sym-cell">${logo(w.symbol, w.logo)}<div class="sym-text"><button class="sym-link" type="button" data-trade="${esc(w.symbol)}" data-side="Buy" title="Open in order form">${esc(w.symbol)}</button>${w.stale ? `<span class="stale">${w.price == null ? "no quote" : "stale"}</span>` : ""}<span class="co">${esc(w.name || "")}</span></div></div></td>
       <td class="num">${w.price == null ? `<span class="muted">—</span>` : usd.format(w.price)}</td>
       <td class="num">${w.change == null ? `<span class="muted">—</span>` : pnl(w.change, w.changePercent)}</td>
       <td class="num">${w.heldQuantity ? shares.format(w.heldQuantity) : `<span class="muted">—</span>`}</td>
@@ -744,6 +763,7 @@ async function selectSymbol(sym) {
     $("#q-sym").textContent = q.symbol;
     $("#q-price").textContent = usd.format(q.price) + (q.stale ? " (stale)" : "");
     $("#q-change").innerHTML = pnl(q.change, q.changePercent) + ` <span class="muted">today</span>`;
+    if (changed) showCompany(q.symbol);
     paintStar();
     msg.textContent = "";
   } catch (e) {
@@ -753,6 +773,18 @@ async function selectSymbol(sym) {
     msg.textContent = e.message;
   }
   updateTicket();
+}
+
+/** Name and logo for the quote box. Cached server-side after the first lookup of each symbol. */
+async function showCompany(sym) {
+  $("#q-logo").innerHTML = logo(sym, null);
+  $("#q-name").textContent = "";
+  try {
+    const c = await api(`/api/company/${encodeURIComponent(sym)}`);
+    if (state.quote?.symbol !== sym) return; // you've moved on to another symbol
+    $("#q-logo").innerHTML = logo(sym, c.logo);
+    $("#q-name").textContent = c.name || "";
+  } catch { /* letter tile stays */ }
 }
 
 function closeSuggest() {

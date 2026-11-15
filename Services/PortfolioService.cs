@@ -65,7 +65,7 @@ public class PortfolioService(FolioDb db, FinnhubClient finnhub)
                 p.Symbol,
                 co?.Name,
                 co?.Industry ?? "Other",
-                co?.Logo,
+                FinnhubClient.SafeLogo(co?.Logo),
                 p.Quantity,
                 Round(p.AvgCost, 4),
                 Round(cost),
