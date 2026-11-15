@@ -214,6 +214,19 @@
           <tbody id="trades"></tbody>
         </table>
       </div>
+      <nav class="pager small" id="trades-pager" aria-label="Trade history pages" hidden>
+        <span id="trades-range" class="muted" aria-live="polite"></span>
+        <div class="pager-controls">
+          <label class="muted">Per page
+            <select id="trades-size">
+              <option>25</option><option>50</option><option>100</option>
+            </select>
+          </label>
+          <button type="button" class="btn xs" data-page="prev" aria-label="Previous page">‹ Prev</button>
+          <span id="trades-pageno"></span>
+          <button type="button" class="btn xs" data-page="next" aria-label="Next page">Next ›</button>
+        </div>
+      </nav>
     </section>
 
     <p class="muted small foot">Simulated trades at Finnhub's latest price. Quotes may be delayed. Not investment advice.</p>

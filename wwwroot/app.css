@@ -105,6 +105,10 @@ button, input { font: inherit; color: inherit; }
 .orders-note { margin: 12px 0 0; }
 a.btn { text-decoration: none; display: inline-block; color: var(--ink); }
 .head-actions { display: flex; align-items: center; gap: 8px; }
+.pager { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
+.pager-controls { display: flex; align-items: center; gap: 8px; }
+.pager select { margin-left: 4px; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--axis); background: var(--surface); }
+#trades-pageno { min-width: 76px; text-align: center; font-variant-numeric: tabular-nums; }
 .status { font-size: 11.5px; font-weight: 600; padding: 1px 7px; border-radius: 4px; background: var(--surface-2); color: var(--ink-2); }
 .status.filled { color: var(--up); }
 .status.rejected { color: var(--down); }

@@ -28,6 +28,7 @@ builder.Services.AddScoped<OrderService>();
 builder.Services.AddHostedService<OrderWorker>();
 builder.Services.AddScoped<WatchlistService>();
 builder.Services.AddScoped<ExportService>();
+builder.Services.AddScoped<TradeHistoryService>();
 
 builder.Services.ConfigureHttpJsonOptions(o =>
     o.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
@@ -78,22 +79,8 @@ api.MapPost("/portfolio/reset", async (ResetRequest req, TradingService t, Snaps
     return Results.NoContent();
 });
 
-api.MapGet("/trades", async (FolioDb db, int? limit, CancellationToken ct) =>
-{
-    var trades = await db.Trades.AsNoTracking()
-        .OrderByDescending(t => t.ExecutedAt)
-        .Take(Math.Clamp(limit ?? 100, 1, 1000))
-        .ToListAsync(ct);
-    var orderIds = trades.Where(t => t.OrderId != null).Select(t => t.OrderId!.Value).Distinct().ToList();
-    var types = await db.Orders.AsNoTracking()
-        .Where(o => orderIds.Contains(o.Id))
-        .ToDictionaryAsync(o => o.Id, o => o.Type, ct);
-    return trades.Select(t => new
-    {
-        t.Id, t.Symbol, t.Side, t.Quantity, t.Price, t.RealizedPnl, t.ExecutedAt, t.OrderId,
-        OrderType = t.OrderId is int id && types.TryGetValue(id, out var type) ? type.ToString() : "Market",
-    });
-});
+api.MapGet("/trades", (int? page, int? pageSize, TradeHistoryService h, CancellationToken ct) =>
+    h.PageAsync(page, pageSize, ct));
 
 api.MapGet("/orders", (string? status, int? limit, OrderService o, CancellationToken ct) =>
     o.ListAsync(status, limit ?? 100, ct));

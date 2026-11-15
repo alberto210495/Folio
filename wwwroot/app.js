@@ -9,7 +9,7 @@ const pct = new Intl.NumberFormat("en-US", { style: "percent", minimumFractionDi
 const shares = new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 });
 const timeFmt = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
 
-const state = { portfolio: null, quote: null, allocMode: "holding", configured: true, history: null, range: "1M", histClear: null, allocClear: null, orders: null, knownOpenOrders: null, watchlist: [], market: null };
+const state = { portfolio: null, quote: null, allocMode: "holding", configured: true, history: null, range: "1M", histClear: null, allocClear: null, orders: null, knownOpenOrders: null, watchlist: [], market: null, tradePage: 1, tradePageSize: 25 };
 
 // ---------- helpers ----------
 function esc(s) {
@@ -67,7 +67,7 @@ async function load() {
   try {
     const [portfolio, trades, history, openOrders, closedOrders, watchlist, market] = await Promise.all([
       api("/api/portfolio"),
-      api("/api/trades?limit=200"),
+      api(tradesUrl()),
       api(`/api/history?range=${state.range}`).catch(() => null),
       api("/api/orders?status=open"),
       api("/api/orders?status=closed&limit=100"),
@@ -498,7 +498,42 @@ $("#holdings").addEventListener("click", (ev) => {
   if (btn) openTicket(btn.dataset.trade, btn.dataset.side, btn.dataset.qty || "");
 });
 
-function renderTrades(trades) {
+// ---------- Trade history (paged on the server) ----------
+const PAGE_SIZE_KEY = "folio.tradePageSize";
+const PAGE_SIZES = [25, 50, 100];
+try {
+  const saved = Number(localStorage.getItem(PAGE_SIZE_KEY));
+  if (PAGE_SIZES.includes(saved)) state.tradePageSize = saved;
+} catch { /* storage unavailable */ }
+$("#trades-size").value = String(state.tradePageSize);
+
+const tradesUrl = () => `/api/trades?page=${state.tradePage}&pageSize=${state.tradePageSize}`;
+let tradesSeq = 0;
+
+/** Loads just the trade table, e.g. when changing pages. */
+async function loadTrades() {
+  const seq = ++tradesSeq;
+  try {
+    const page = await api(tradesUrl());
+    if (seq === tradesSeq) renderTrades(page); // ignore responses for pages you've already left
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+function renderTrades(page) {
+  const { items: trades, total, page: current, pageSize, pages } = page;
+  state.tradePage = current; // the server clamps past-the-end pages
+  const pager = $("#trades-pager");
+  pager.hidden = total <= PAGE_SIZES[0];
+  if (!pager.hidden) {
+    const from = (current - 1) * pageSize + 1;
+    $("#trades-range").textContent = `${from.toLocaleString()}–${(from + trades.length - 1).toLocaleString()} of ${total.toLocaleString()} trades`;
+    $("#trades-pageno").textContent = `Page ${current} of ${pages}`;
+    pager.querySelector("[data-page=prev]").disabled = current <= 1;
+    pager.querySelector("[data-page=next]").disabled = current >= pages;
+  }
+
   const tbody = $("#trades");
   if (!trades.length) {
     tbody.innerHTML = `<tr class="empty"><td colspan="7">No trades yet.</td></tr>`;
@@ -515,6 +550,24 @@ function renderTrades(trades) {
       <td class="num">${t.realizedPnl == null ? `<span class="muted">—</span>` : pnl(t.realizedPnl)}</td>
     </tr>`).join("");
 }
+
+$("#trades-pager").addEventListener("click", (ev) => {
+  const btn = ev.target.closest("[data-page]");
+  if (!btn || btn.disabled) return;
+  state.tradePage += btn.dataset.page === "next" ? 1 : -1;
+  loadTrades();
+  // Keep the table's top in view when a long page shrinks.
+  $("#trades-h").scrollIntoView({ block: "nearest", behavior: "smooth" });
+});
+
+$("#trades-size").addEventListener("change", (ev) => {
+  // Stay near the same trades: keep the first row of the current page on the new page.
+  const firstRow = (state.tradePage - 1) * state.tradePageSize;
+  state.tradePageSize = Number(ev.target.value);
+  state.tradePage = Math.floor(firstRow / state.tradePageSize) + 1;
+  try { localStorage.setItem(PAGE_SIZE_KEY, String(state.tradePageSize)); } catch { /* ignore */ }
+  loadTrades();
+});
 
 // ---------- Orders ----------
 let ordersTab = "open";
@@ -923,6 +976,7 @@ form.addEventListener("submit", async (ev) => {
       if (o.status === "Open") state.knownOpenOrders?.add(o.id);
     }
     $("#qty").value = "";
+    state.tradePage = 1; // show the new trade
     await load();
   } catch (e) {
     msg.className = "small msg down";
@@ -945,6 +999,7 @@ dlg.addEventListener("close", async () => {
     state.quote = null;
     $("#quote").hidden = true;
     $("#trade-msg").textContent = "";
+    state.tradePage = 1;
     await load();
   } catch (e) {
     banner(esc(e.message));

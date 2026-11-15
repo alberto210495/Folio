@@ -31,6 +31,7 @@ The SQLite file `folio.db` is created on first run. The account starts with $100
   A limit that can already fill when you place it fills immediately. A stop that would trigger immediately is refused. New orders can't commit more cash or shares than you have once other open orders are counted, but nothing is reserved: market orders can spend it, in which case the resting order is rejected when it triggers. A price that crosses your trigger and comes back between two checks won't fill.
 - **Watchlist:** follow up to 25 symbols you don't hold, with live price and today's change. Add a ticker in the Watchlist card, or tap ☆ next to a quote in the order form. Tap a symbol or **Buy** to load it into the order form. Resetting the account keeps your watchlist.
 - **CSV export:** **Export CSV** on Holdings, Orders and Trade history downloads that table in full (every trade and order, not just what's on screen). Times are UTC in ISO 8601, numbers use `.` as the decimal point, and the holdings file ends with a `CASH` row. Text that a spreadsheet could run as a formula (starting with `=`, `+`, `-` or `@`) gets a leading `'`.
+- **Trade history** is paged on the server, 25 trades per page by default (50 or 100 if you choose; the page remembers your choice). Placing a trade jumps back to page 1 so you see it. **Export CSV** still downloads every trade.
 - **Cost basis** is the weighted average. Selling books realized P&L = (fill − avg cost) × shares.
 - **Unrealized P&L** and **Today** use live quotes. Total return = (cash + holdings) − starting cash.
 - **Sector, name and logo** come from Finnhub's `/stock/profile2`. They're fetched once per symbol (on first buy, watch or lookup) and cached in the `Companies` table. ETFs have no profile on the free tier, so they show as "Other" with a letter tile instead of a logo. Logo images load straight from Finnhub's image host, without a referrer; only `https` URLs are used.
@@ -45,7 +46,7 @@ The SQLite file `folio.db` is created on first run. The account starts with $100
 | GET | `/api/market` | Whether the US market is open, when it closes or next opens, and the reason it's closed |
 | GET | `/api/portfolio` | Cash, holdings with live P&L, totals |
 | POST | `/api/trades` | `{ "symbol": "AAPL", "side": "Buy" \| "Sell", "quantity": 10 }` |
-| GET | `/api/trades?limit=100` | Trade history, newest first; `orderType` is `Market`, `Limit` or `Stop` |
+| GET | `/api/trades?page=1&pageSize=25` | One page of trade history, newest first: `{ items, total, page, pageSize, pages }`. `pageSize` is 1–200; a page past the end returns the last page. Each item's `orderType` is `Market`, `Limit` or `Stop` |
 | POST | `/api/orders` | `{ "symbol": "AAPL", "side": "Buy", "type": "Limit" \| "Stop", "quantity": 10, "price": 190 }` |
 | GET | `/api/orders?status=open` | `status` is `open`, `closed` or `all`; open orders include `currentPrice` |
 | DELETE | `/api/orders/{id}` | Cancel an open order |
@@ -69,7 +70,7 @@ Errors return `{ "error": "..." }`: 400 for rejected orders, 429 or 503 for Finn
 dotnet test Folio.slnx
 ```
 
-xUnit tests in `tests/Folio.Tests` cover trading (average cost, realized P&L, rounding, rejections), market hours (NYSE holidays, early closes, daylight saving, closed-market trading), limit and stop orders (trigger rules, fills, commitments, cancels, stale prices), company profiles and logos, the watchlist, CSV export (quoting, formula escaping, locale), reset, valuation, snapshots and the benchmark maths. They use a fake Finnhub and an in-memory SQLite database with the real migrations, so they need neither an API key nor a network connection.
+xUnit tests in `tests/Folio.Tests` cover trading (average cost, realized P&L, rounding, rejections), market hours (NYSE holidays, early closes, daylight saving, closed-market trading), limit and stop orders (trigger rules, fills, commitments, cancels, stale prices), company profiles and logos, the watchlist, trade history paging, CSV export (quoting, formula escaping, locale), reset, valuation, snapshots and the benchmark maths. They use a fake Finnhub and an in-memory SQLite database with the real migrations, so they need neither an API key nor a network connection.
 
 ## Notes
 
