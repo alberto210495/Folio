@@ -1,9 +1,10 @@
 namespace Folio.Data;
 
-/// <summary>The paper-trading account. Folio runs a single account (Id = 1).</summary>
+/// <summary>A paper-trading portfolio: its own cash, positions, trades, orders and value history.</summary>
 public class Account
 {
     public int Id { get; set; }
+    public required string Name { get; set; }
     public decimal StartingCash { get; set; }
     public decimal Cash { get; set; }
     public decimal RealizedPnl { get; set; }
@@ -16,6 +17,7 @@ public class Account
 public class Position
 {
     public int Id { get; set; }
+    public int AccountId { get; set; }
     public required string Symbol { get; set; }
     public decimal Quantity { get; set; }
     /// <summary>Weighted-average cost per share.</summary>
@@ -29,6 +31,7 @@ public enum TradeSide { Buy, Sell }
 public class Trade
 {
     public int Id { get; set; }
+    public int AccountId { get; set; }
     public required string Symbol { get; set; }
     public TradeSide Side { get; set; }
     public decimal Quantity { get; set; }
@@ -54,6 +57,7 @@ public class Company
 public class PortfolioSnapshot
 {
     public int Id { get; set; }
+    public int AccountId { get; set; }
     public DateTime TakenAt { get; set; } = DateTime.UtcNow;
     public decimal TotalValue { get; set; }
     public decimal Cash { get; set; }
@@ -73,6 +77,7 @@ public enum OrderStatus { Open, Filled, Cancelled, Rejected }
 public class Order
 {
     public int Id { get; set; }
+    public int AccountId { get; set; }
     public required string Symbol { get; set; }
     public TradeSide Side { get; set; }
     public OrderType Type { get; set; }

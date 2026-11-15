@@ -21,7 +21,7 @@ public record OrderView(
     decimal? CurrentPrice);
 
 /// <summary>Places, cancels and fills resting limit and stop orders.</summary>
-public class OrderService(FolioDb db, TradingService trading, FinnhubClient finnhub, MarketClock clock, ILogger<OrderService> log)
+public class OrderService(FolioDb db, TradingService trading, FinnhubClient finnhub, MarketClock clock, PortfolioContext portfolio, ILogger<OrderService> log)
 {
     // Serialises order checks and cancels so an order can't be cancelled mid-fill.
     private static readonly SemaphoreSlim OrderLock = new(1, 1);
@@ -63,10 +63,11 @@ public class OrderService(FolioDb db, TradingService trading, FinnhubClient finn
         await OrderLock.WaitAsync(ct);
         try
         {
-            var open = await db.Orders.AsNoTracking().Where(o => o.Status == OrderStatus.Open).ToListAsync(ct);
+            var accountId = portfolio.Id;
+            var open = await db.Orders.AsNoTracking().Where(o => o.AccountId == accountId && o.Status == OrderStatus.Open).ToListAsync(ct);
             if (req.Side == TradeSide.Sell)
             {
-                var held = (await db.Positions.AsNoTracking().SingleOrDefaultAsync(p => p.Symbol == symbol, ct))?.Quantity ?? 0;
+                var held = (await db.Positions.AsNoTracking().SingleOrDefaultAsync(p => p.AccountId == accountId && p.Symbol == symbol, ct))?.Quantity ?? 0;
                 var committed = open.Where(o => o.Side == TradeSide.Sell && o.Symbol == symbol).Sum(o => o.Quantity);
                 if (qty > held - committed)
                     throw new TradeRejectedException(committed > 0
@@ -75,7 +76,7 @@ public class OrderService(FolioDb db, TradingService trading, FinnhubClient finn
             }
             else
             {
-                var account = await db.GetAccountAsync(ct);
+                var account = await db.GetAccountAsync(accountId, ct);
                 var committed = open.Where(o => o.Side == TradeSide.Buy).Sum(o => o.Quantity * o.Price);
                 var cost = qty * req.Price;
                 if (cost > account.Cash - committed)
@@ -84,7 +85,7 @@ public class OrderService(FolioDb db, TradingService trading, FinnhubClient finn
                         : $"Insufficient cash: order needs about {Usd(cost)}, you have {Usd(account.Cash)}.");
             }
 
-            var order = new Order { Symbol = symbol, Side = req.Side, Type = req.Type, Quantity = qty, Price = req.Price };
+            var order = new Order { AccountId = accountId, Symbol = symbol, Side = req.Side, Type = req.Type, Quantity = qty, Price = req.Price };
             db.Orders.Add(order);
             await db.SaveChangesAsync(ct);
 
@@ -105,7 +106,7 @@ public class OrderService(FolioDb db, TradingService trading, FinnhubClient finn
         await OrderLock.WaitAsync(ct);
         try
         {
-            var order = await db.Orders.FindAsync([id], ct)
+            var order = await db.Orders.FirstOrDefaultAsync(o => o.Id == id && o.AccountId == portfolio.Id, ct)
                 ?? throw new TradeRejectedException($"Order {id} not found.");
             if (order.Status != OrderStatus.Open)
                 throw new TradeRejectedException($"Order {id} is already {order.Status.ToString().ToLowerInvariant()}.");
@@ -161,7 +162,7 @@ public class OrderService(FolioDb db, TradingService trading, FinnhubClient finn
 
     public async Task<IReadOnlyList<OrderView>> ListAsync(string? status, int limit, CancellationToken ct = default)
     {
-        var query = db.Orders.AsNoTracking();
+        var query = db.Orders.AsNoTracking().Where(o => o.AccountId == portfolio.Id);
         query = (status ?? "open").ToLowerInvariant() switch
         {
             "open" => query.Where(o => o.Status == OrderStatus.Open),
@@ -190,7 +191,7 @@ public class OrderService(FolioDb db, TradingService trading, FinnhubClient finn
     {
         try
         {
-            await trading.FillAsync(order.Symbol, order.Side, order.Quantity, price, order.Id, _ =>
+            await trading.FillAsync(order.AccountId, order.Symbol, order.Side, order.Quantity, price, order.Id, _ =>
             {
                 order.Status = OrderStatus.Filled;
                 order.FillPrice = price;
@@ -309,7 +310,7 @@ public class OrderWorker(IServiceScopeFactory scopes, LivePrices live, IOptions<
             var filled = await scope.ServiceProvider.GetRequiredService<OrderService>().CheckOpenOrdersAsync(symbol, ct);
             if (filled > 0)
             {
-                await scope.ServiceProvider.GetRequiredService<SnapshotService>().RecordAsync(ct);
+                await scope.ServiceProvider.GetRequiredService<SnapshotService>().RecordAllAsync(ct);
                 await RefreshOpenAsync(ct);
             }
         }

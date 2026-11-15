@@ -25,6 +25,8 @@ builder.Services.AddSingleton(sp => new LivePrices(
     regularHoursOnly: sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<FolioOptions>>().Value.EnforceMarketHours));
 builder.Services.AddSingleton<IStreamSymbols, DbStreamSymbols>();
 builder.Services.AddHostedService<FinnhubStream>();
+builder.Services.AddScoped<PortfolioContext>();
+builder.Services.AddScoped<PortfoliosService>();
 builder.Services.AddScoped<TradingService>();
 builder.Services.AddScoped<PortfolioService>();
 builder.Services.AddScoped<SnapshotService>();
@@ -47,6 +49,7 @@ app.UseExceptionHandler(errApp => errApp.Run(async ctx =>
     (int status, string message) = ex switch
     {
         TradeRejectedException e => (400, e.Message),
+        PortfolioNotFoundException e => (404, e.Message),
         FinnhubException { Status: HttpStatusCode.TooManyRequests } e => (429, e.Message),
         FinnhubException e => (503, e.Message),
         BadHttpRequestException e => (400, e.Message),
@@ -70,6 +73,41 @@ app.UseDefaultFiles();
 app.UseStaticFiles();
 
 var api = app.MapGroup("/api");
+
+// Every API call works on one portfolio: ?portfolio=<id>, or the first portfolio when omitted.
+api.AddEndpointFilter(async (ctx, next) =>
+{
+    var http = ctx.HttpContext;
+    var db = http.RequestServices.GetRequiredService<FolioDb>();
+    var raw = http.Request.Query["portfolio"].ToString();
+    int id;
+    if (raw.Length == 0) id = await db.DefaultAccountIdAsync(http.RequestAborted);
+    else if (!int.TryParse(raw, out id) || !await db.Accounts.AnyAsync(a => a.Id == id, http.RequestAborted))
+        return Results.NotFound(new { error = "That portfolio doesn't exist. It may have been deleted." });
+    http.RequestServices.GetRequiredService<PortfolioContext>().Id = id;
+    return await next(ctx);
+});
+
+api.MapGet("/portfolios", (PortfoliosService p, CancellationToken ct) => p.ListAsync(ct));
+
+api.MapPost("/portfolios", async (CreatePortfolioRequest req, PortfoliosService p, SnapshotService s, CancellationToken ct) =>
+{
+    var created = await p.CreateAsync(req, ct);
+    try { await s.RecordAsync(created.Id, ct); } catch (FinnhubException) { /* benchmark baseline is best-effort */ }
+    return Results.Created($"/api/portfolios/{created.Id}", created);
+});
+
+api.MapPatch("/portfolios/{id:int}", async (int id, RenamePortfolioRequest req, PortfoliosService p, CancellationToken ct) =>
+{
+    await p.RenameAsync(id, req.Name, ct);
+    return Results.NoContent();
+});
+
+api.MapDelete("/portfolios/{id:int}", async (int id, PortfoliosService p, CancellationToken ct) =>
+{
+    await p.DeleteAsync(id, ct);
+    return Results.NoContent();
+});
 
 api.MapGet("/status", (FinnhubClient f, LivePrices live, Microsoft.Extensions.Options.IOptions<FinnhubOptions> o) =>
     new { finnhubConfigured = f.IsConfigured, streaming = f.IsConfigured && o.Value.Streaming, streamConnected = live.Connected });

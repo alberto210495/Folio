@@ -32,6 +32,11 @@ namespace Folio.Data.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("TEXT");
+
                     b.Property<decimal>("RealizedPnl")
                         .HasColumnType("TEXT");
 
@@ -70,6 +75,9 @@ namespace Folio.Data.Migrations
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("AccountId")
                         .HasColumnType("INTEGER");
 
                     b.Property<DateTime?>("ClosedAt")
@@ -113,6 +121,8 @@ namespace Folio.Data.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("AccountId");
+
                     b.HasIndex("Status");
 
                     b.ToTable("Orders");
@@ -122,6 +132,9 @@ namespace Folio.Data.Migrations
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("AccountId")
                         .HasColumnType("INTEGER");
 
                     b.Property<decimal?>("BenchmarkPrice")
@@ -141,7 +154,7 @@ namespace Folio.Data.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("TakenAt");
+                    b.HasIndex("AccountId", "TakenAt");
 
                     b.ToTable("Snapshots");
                 });
@@ -150,6 +163,9 @@ namespace Folio.Data.Migrations
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("AccountId")
                         .HasColumnType("INTEGER");
 
                     b.Property<decimal>("AvgCost")
@@ -168,7 +184,7 @@ namespace Folio.Data.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("Symbol")
+                    b.HasIndex("AccountId", "Symbol")
                         .IsUnique();
 
                     b.ToTable("Positions");
@@ -178,6 +194,9 @@ namespace Folio.Data.Migrations
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("AccountId")
                         .HasColumnType("INTEGER");
 
                     b.Property<DateTime>("ExecutedAt")
@@ -207,9 +226,9 @@ namespace Folio.Data.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("ExecutedAt");
-
                     b.HasIndex("OrderId");
+
+                    b.HasIndex("AccountId", "ExecutedAt");
 
                     b.ToTable("Trades");
                 });
@@ -228,6 +247,42 @@ namespace Folio.Data.Migrations
                     b.HasIndex("AddedAt");
 
                     b.ToTable("Watchlist");
+                });
+
+            modelBuilder.Entity("Folio.Data.Order", b =>
+                {
+                    b.HasOne("Folio.Data.Account", null)
+                        .WithMany()
+                        .HasForeignKey("AccountId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Folio.Data.PortfolioSnapshot", b =>
+                {
+                    b.HasOne("Folio.Data.Account", null)
+                        .WithMany()
+                        .HasForeignKey("AccountId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Folio.Data.Position", b =>
+                {
+                    b.HasOne("Folio.Data.Account", null)
+                        .WithMany()
+                        .HasForeignKey("AccountId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Folio.Data.Trade", b =>
+                {
+                    b.HasOne("Folio.Data.Account", null)
+                        .WithMany()
+                        .HasForeignKey("AccountId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 #pragma warning restore 612, 618
         }

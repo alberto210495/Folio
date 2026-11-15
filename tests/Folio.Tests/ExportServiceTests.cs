@@ -5,7 +5,7 @@ namespace Folio.Tests;
 
 public class ExportServiceTests
 {
-    private static ExportService Export(TestApp.Scope s) => new(s.Db, s.Portfolio);
+    private static ExportService Export(TestApp.Scope s) => s.Export;
 
     private static string[] Lines(CsvFile f) => f.Content.Split("\r\n", StringSplitOptions.RemoveEmptyEntries);
 
@@ -56,7 +56,7 @@ public class ExportServiceTests
         var file = await Export(check).TradesAsync();
         var lines = Lines(file);
 
-        Assert.Matches(@"^folio-trades-\d{4}-\d{2}-\d{2}\.csv$", file.FileName);
+        Assert.Matches(@"^folio-my-portfolio-trades-\d{4}-\d{2}-\d{2}\.csv$", file.FileName);
         Assert.Equal("executed_at_utc,side,order_type,symbol,quantity,price,total,realized_pnl,order_id", lines[0]);
         Assert.Equal(4, lines.Length);
         Assert.Matches(@"Z,Buy,Market,AAPL,10,100,1000,,$", lines[1]);

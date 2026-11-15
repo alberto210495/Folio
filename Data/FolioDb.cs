@@ -4,8 +4,8 @@ namespace Folio.Data;
 
 public class FolioDb(DbContextOptions<FolioDb> options) : DbContext(options)
 {
-    public const int AccountId = 1;
     public const decimal DefaultStartingCash = 100_000m;
+    public const string DefaultName = "My portfolio";
 
     public DbSet<Account> Accounts => Set<Account>();
     public DbSet<Position> Positions => Set<Position>();
@@ -25,17 +25,25 @@ public class FolioDb(DbContextOptions<FolioDb> options) : DbContext(options)
 
     protected override void OnModelCreating(ModelBuilder b)
     {
-        b.Entity<Position>().HasIndex(p => p.Symbol).IsUnique();
+        b.Entity<Account>().Property(a => a.Name).HasMaxLength(40);
+
+        // Every row below belongs to one portfolio; deleting the portfolio deletes them.
+        b.Entity<Position>().HasOne<Account>().WithMany().HasForeignKey(p => p.AccountId).OnDelete(DeleteBehavior.Cascade);
+        b.Entity<Trade>().HasOne<Account>().WithMany().HasForeignKey(t => t.AccountId).OnDelete(DeleteBehavior.Cascade);
+        b.Entity<Order>().HasOne<Account>().WithMany().HasForeignKey(o => o.AccountId).OnDelete(DeleteBehavior.Cascade);
+        b.Entity<PortfolioSnapshot>().HasOne<Account>().WithMany().HasForeignKey(s => s.AccountId).OnDelete(DeleteBehavior.Cascade);
+
+        b.Entity<Position>().HasIndex(p => new { p.AccountId, p.Symbol }).IsUnique();
         b.Entity<Position>().Property(p => p.Symbol).HasMaxLength(20);
 
-        b.Entity<Trade>().HasIndex(t => t.ExecutedAt);
+        b.Entity<Trade>().HasIndex(t => new { t.AccountId, t.ExecutedAt });
         b.Entity<Trade>().Property(t => t.Symbol).HasMaxLength(20);
         b.Entity<Trade>().Property(t => t.Side).HasConversion<string>().HasMaxLength(4);
 
         b.Entity<Company>().HasKey(c => c.Symbol);
         b.Entity<Company>().Property(c => c.Symbol).HasMaxLength(20);
 
-        b.Entity<PortfolioSnapshot>().HasIndex(s => s.TakenAt);
+        b.Entity<PortfolioSnapshot>().HasIndex(s => new { s.AccountId, s.TakenAt });
 
         b.Entity<Trade>().HasIndex(t => t.OrderId);
         b.Entity<Order>().HasIndex(o => o.Status);
@@ -50,19 +58,27 @@ public class FolioDb(DbContextOptions<FolioDb> options) : DbContext(options)
         b.Entity<WatchlistItem>().HasIndex(w => w.AddedAt);
     }
 
-    public async Task<Account> GetAccountAsync(CancellationToken ct = default)
-    {
-        var account = await Accounts.FindAsync([AccountId], ct);
-        if (account is not null) return account;
+    /// <summary>The portfolio with this id (tracked), or <see cref="PortfolioNotFoundException"/>.</summary>
+    public async Task<Account> GetAccountAsync(int id, CancellationToken ct = default) =>
+        await Accounts.FindAsync([id], ct) ?? throw new PortfolioNotFoundException(id);
 
-        account = new Account
-        {
-            Id = AccountId,
-            StartingCash = DefaultStartingCash,
-            Cash = DefaultStartingCash,
-        };
+    /// <summary>The first portfolio, creating "My portfolio" with $100,000 if there are none.</summary>
+    public async Task<Account> GetAccountAsync(CancellationToken ct = default) =>
+        await Accounts.FindAsync([await DefaultAccountIdAsync(ct)], ct) ?? throw new PortfolioNotFoundException(0);
+
+    public async Task<int> DefaultAccountIdAsync(CancellationToken ct = default)
+    {
+        var id = await Accounts.OrderBy(a => a.Id).Select(a => (int?)a.Id).FirstOrDefaultAsync(ct);
+        if (id is not null) return id.Value;
+
+        var account = new Account { Name = DefaultName, StartingCash = DefaultStartingCash, Cash = DefaultStartingCash };
         Accounts.Add(account);
         await SaveChangesAsync(ct);
-        return account;
+        return account.Id;
     }
+}
+
+public class PortfolioNotFoundException(int id) : Exception($"Portfolio {id} not found.")
+{
+    public int Id { get; } = id;
 }

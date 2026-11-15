@@ -1,6 +1,6 @@
 # Folio
 
-Paper-trading portfolio tracker. Buy and sell real tickers with fake money at live Finnhub prices, track P&L, and see your allocation by holding and by sector.
+Paper-trading portfolio tracker. Buy and sell real tickers with fake money at live Finnhub prices, track P&L, and see your allocation by holding and by sector. Run several portfolios side by side to compare strategies.
 
 **Stack:** ASP.NET Core 10 minimal API · EF Core 10 + SQLite · vanilla HTML/CSS/JS (no build step) · Finnhub.
 
@@ -16,10 +16,11 @@ Paper-trading portfolio tracker. Buy and sell real tickers with fake money at li
    Or use an environment variable: `Finnhub__ApiKey=<your-key>`.
 3. `dotnet run`, then open the URL it prints.
 
-The SQLite file `folio.db` is created on first run. The account starts with $100,000. Use **Reset account** to start over with any amount.
+The SQLite file `folio.db` is created on first run with one portfolio, "My portfolio", holding $100,000. Use **Reset portfolio** to start it over with any amount, or **+ New** to add another.
 
 ## How it works
 
+- **Portfolios:** each portfolio has its own cash, holdings, orders, trade history, value chart and S&P comparison. The tabs at the top show every portfolio's value and return; click one to switch, and Folio remembers your choice. **+ New** creates one with any starting cash, and **Rename or delete** manages the open one (up to 20; the last one can't be deleted, only reset). The watchlist and company data are shared. Background jobs cover every portfolio: orders fill into the portfolio they were placed in, and each portfolio gets its own value snapshots.
 - **Orders** are market orders filled at Finnhub's latest price (`/quote`). Fractional shares are allowed, up to 4 decimals.
 - **Market hours:** trades only execute during the regular US session, 9:30 AM–4:00 PM ET on weekdays. Exchange holidays and 1:00 PM early closes (the day after Thanksgiving, Christmas Eve, July 3) are worked out from NYSE's published rules, so this needs no API calls; one-off closures announced at short notice aren't known. While the market is closed, market orders are refused and the top bar shows when it next opens. Limit and stop orders can still be placed; one that's already marketable waits for the open instead of filling on the last close. To trade around the clock at the last price, set `Folio:EnforceMarketHours` to `false`.
 - **Live prices:** Folio keeps one websocket open to Finnhub (the free tier allows one connection and 50 symbols) and streams trade prices for your holdings, open orders, SPY, your watchlist and the symbol in the order form, in that order of priority. The page receives them about once a second over server-sent events (`/api/stream`), so your API key never reaches the browser. Prices update in place with a brief green or red flash, and a **Live** badge shows in the top bar while the market is open. Streamed prices are layered over the REST quote everywhere: valuations, market orders and order fills all use the latest trade. Prints outside regular hours are ignored unless `Folio:EnforceMarketHours` is off. If the stream drops, Folio reconnects with backoff and falls back to the 15-second REST quotes meanwhile. Set `Finnhub:Streaming` to `false` to turn streaming off.
@@ -46,6 +47,10 @@ The SQLite file `folio.db` is created on first run. The account starts with $100
 | --- | --- | --- |
 | GET | `/api/stream` | Server-sent events: `status` (`{ connected }`) and `prices` (`{ "AAPL": { p, t } }`), at most once a second |
 | GET | `/api/market` | Whether the US market is open, when it closes or next opens, and the reason it's closed |
+| GET | `/api/portfolios` | Every portfolio with its live value and return |
+| POST | `/api/portfolios` | `{ "name": "Growth", "startingCash": 25000 }` |
+| PATCH | `/api/portfolios/{id}` | `{ "name": "Long term" }` |
+| DELETE | `/api/portfolios/{id}` | Deletes the portfolio and everything in it (not the last one) |
 | GET | `/api/portfolio` | Cash, holdings with live P&L, totals |
 | POST | `/api/trades` | `{ "symbol": "AAPL", "side": "Buy" \| "Sell", "quantity": 10 }` |
 | GET | `/api/trades?page=1&pageSize=25` | One page of trade history, newest first: `{ items, total, page, pageSize, pages }`. `pageSize` is 1–200; a page past the end returns the last page. Each item's `orderType` is `Market`, `Limit` or `Stop` |
@@ -62,9 +67,11 @@ The SQLite file `folio.db` is created on first run. The account starts with $100
 | GET | `/api/quote/{symbol}` | Cached live quote |
 | GET | `/api/search?q=apple` | US symbol search |
 | GET | `/api/company/{symbol}` | Name, industry and logo URL (cached after the first lookup) |
-| POST | `/api/portfolio/reset` | `{ "startingCash": 100000 }` (wipes positions, trades and orders; keeps the watchlist) |
+| POST | `/api/portfolio/reset` | `{ "startingCash": 100000 }` (wipes the portfolio's positions, trades, orders and history; keeps the watchlist) |
 
-Errors return `{ "error": "..." }`: 400 for rejected orders, 429 or 503 for Finnhub problems.
+Portfolio-specific endpoints (portfolio, trades, orders, history, exports, reset, and the watchlist's shares held) work on the portfolio given by `?portfolio=<id>`, or the first portfolio when it's omitted.
+
+Errors return `{ "error": "..." }`: 400 for rejected orders, 404 for an unknown portfolio, 429 or 503 for Finnhub problems.
 
 ## Tests
 
@@ -72,9 +79,9 @@ Errors return `{ "error": "..." }`: 400 for rejected orders, 429 or 503 for Finn
 dotnet test Folio.slnx
 ```
 
-xUnit tests in `tests/Folio.Tests` cover trading (average cost, realized P&L, rounding, rejections), live prices (merging ticks into quotes, message parsing, subscriptions, the event stream, tick-triggered fills), market hours (NYSE holidays, early closes, daylight saving, closed-market trading), limit and stop orders (trigger rules, fills, commitments, cancels, stale prices), company profiles and logos, the watchlist, trade history paging, CSV export (quoting, formula escaping, locale), reset, valuation, snapshots and the benchmark maths. They use a fake Finnhub and an in-memory SQLite database with the real migrations, so they need neither an API key nor a network connection. One optional test connects to the real Finnhub websocket when a `FINNHUB_KEY` environment variable is set; it streams a crypto pair, so it works even when US markets are closed.
+xUnit tests in `tests/Folio.Tests` cover multiple portfolios (separation of cash, holdings, orders and history; fills into the right portfolio; reset; validation; deletion), trading (average cost, realized P&L, rounding, rejections), live prices (merging ticks into quotes, message parsing, subscriptions, the event stream, tick-triggered fills), market hours (NYSE holidays, early closes, daylight saving, closed-market trading), limit and stop orders (trigger rules, fills, commitments, cancels, stale prices), company profiles and logos, the watchlist, trade history paging, CSV export (quoting, formula escaping, locale), reset, valuation, snapshots and the benchmark maths. They use a fake Finnhub and an in-memory SQLite database with the real migrations, so they need neither an API key nor a network connection. One optional test connects to the real Finnhub websocket when a `FINNHUB_KEY` environment variable is set; it streams a crypto pair, so it works even when US markets are closed.
 
 ## Notes
 
 - The schema is managed by EF Core migrations (in `Data/Migrations`) and applied automatically at startup. After changing an entity, run `dotnet tool restore` once, then `dotnet dotnet-ef migrations add <Name> -o Data/Migrations`.
-- Single account, single user, no auth. Intended to run locally.
+- Single user, no auth. Intended to run locally.

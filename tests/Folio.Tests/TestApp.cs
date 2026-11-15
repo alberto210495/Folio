@@ -79,10 +79,15 @@ public sealed class TestApp : IDisposable
         _dbOptions = new DbContextOptionsBuilder<FolioDb>().UseSqlite(_conn).Options;
         using var db = new FolioDb(_dbOptions);
         db.Database.Migrate();
+        DefaultPortfolioId = db.DefaultAccountIdAsync().GetAwaiter().GetResult();
         Finnhub.Prices["SPY"] = 500m;
     }
 
-    public Scope NewScope() => new(this);
+    /// <summary>The "My portfolio" account created at startup.</summary>
+    public int DefaultPortfolioId { get; }
+
+    /// <summary>A scope working on <paramref name="portfolioId"/> (the default portfolio when omitted).</summary>
+    public Scope NewScope(int? portfolioId = null) => new(this, portfolioId ?? DefaultPortfolioId);
 
     public void Dispose() => _conn.Dispose();
 
@@ -95,9 +100,14 @@ public sealed class TestApp : IDisposable
         public SnapshotService Snapshots { get; }
         public OrderService Orders { get; }
         public WatchlistService Watchlist { get; }
+        public PortfolioContext Context { get; } = new();
+        public TradeHistoryService History { get; }
+        public ExportService Export { get; }
+        public PortfoliosService Portfolios { get; }
 
-        internal Scope(TestApp app)
+        internal Scope(TestApp app, int portfolioId)
         {
+            Context.Id = portfolioId;
             Db = new FolioDb(app._dbOptions);
             var http = new HttpClient(app.Finnhub) { BaseAddress = new Uri("https://finnhub.test/api/v1/") };
             Finnhub = new FinnhubClient(
@@ -107,11 +117,14 @@ public sealed class TestApp : IDisposable
                 app.Live,
                 NullLogger<FinnhubClient>.Instance);
             var clock = new MarketClock(app.Time, Options.Create(app.Settings));
-            Trading = new TradingService(Db, Finnhub, clock, NullLogger<TradingService>.Instance);
-            Portfolio = new PortfolioService(Db, Finnhub);
-            Snapshots = new SnapshotService(Db, Portfolio, Finnhub, Options.Create(new FolioOptions()));
-            Orders = new OrderService(Db, Trading, Finnhub, clock, NullLogger<OrderService>.Instance);
-            Watchlist = new WatchlistService(Db, Finnhub, Trading);
+            Trading = new TradingService(Db, Finnhub, clock, Context, NullLogger<TradingService>.Instance);
+            Portfolio = new PortfolioService(Db, Finnhub, Context);
+            Snapshots = new SnapshotService(Db, Portfolio, Finnhub, Context, Options.Create(new FolioOptions()));
+            Orders = new OrderService(Db, Trading, Finnhub, clock, Context, NullLogger<OrderService>.Instance);
+            Watchlist = new WatchlistService(Db, Finnhub, Trading, Context);
+            History = new TradeHistoryService(Db, Context);
+            Export = new ExportService(Db, Portfolio, Context);
+            Portfolios = new PortfoliosService(Db, Portfolio);
         }
 
         public Task<OrderView> Place(string symbol, TradeSide side, OrderType type, decimal qty, decimal price) =>

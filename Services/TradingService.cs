@@ -9,7 +9,7 @@ public record TradeRequest(string Symbol, TradeSide Side, decimal Quantity);
 public class TradeRejectedException(string message) : Exception(message);
 
 /// <summary>Executes market orders against the paper account at the live Finnhub price.</summary>
-public partial class TradingService(FolioDb db, FinnhubClient finnhub, MarketClock clock, ILogger<TradingService> log)
+public partial class TradingService(FolioDb db, FinnhubClient finnhub, MarketClock clock, PortfolioContext portfolio, ILogger<TradingService> log)
 {
     // Serialises trades so two concurrent orders can't both spend the same cash.
     private static readonly SemaphoreSlim TradeLock = new(1, 1);
@@ -32,7 +32,7 @@ public partial class TradingService(FolioDb db, FinnhubClient finnhub, MarketClo
             throw new TradeRejectedException(
                 $"The market is closed. It opens {clock.DescribeNextOpen()}. You can place a limit order now; it's checked once the market opens.");
         var quote = await LiveQuoteAsync(symbol, ct);
-        return await FillAsync(symbol, request.Side, qty, quote.Price, ct: ct);
+        return await FillAsync(portfolio.Id, symbol, request.Side, qty, quote.Price, ct: ct);
     }
 
     public static decimal ValidateQuantity(decimal qty)
@@ -55,22 +55,22 @@ public partial class TradingService(FolioDb db, FinnhubClient finnhub, MarketClo
     }
 
     /// <summary>
-    /// Books a fill at <paramref name="price"/>. <paramref name="beforeSave"/> runs inside the same
-    /// transaction (used to mark a resting order filled atomically with its trade).
+    /// Books a fill at <paramref name="price"/> in portfolio <paramref name="accountId"/>. <paramref name="beforeSave"/>
+    /// runs inside the same transaction (used to mark a resting order filled atomically with its trade).
     /// </summary>
     public async Task<Trade> FillAsync(
-        string symbol, TradeSide side, decimal qty, decimal price,
+        int accountId, string symbol, TradeSide side, decimal qty, decimal price,
         int? orderId = null, Action<Trade>? beforeSave = null, CancellationToken ct = default)
     {
         await TradeLock.WaitAsync(ct);
         try
         {
             await using var tx = await db.Database.BeginTransactionAsync(ct);
-            var account = await db.GetAccountAsync(ct);
-            var position = await db.Positions.SingleOrDefaultAsync(p => p.Symbol == symbol, ct);
+            var account = await db.GetAccountAsync(accountId, ct);
+            var position = await db.Positions.SingleOrDefaultAsync(p => p.AccountId == accountId && p.Symbol == symbol, ct);
             var notional = Money(qty * price);
 
-            var trade = new Trade { Symbol = symbol, Side = side, Quantity = qty, Price = price, OrderId = orderId };
+            var trade = new Trade { AccountId = accountId, Symbol = symbol, Side = side, Quantity = qty, Price = price, OrderId = orderId };
 
             if (side == TradeSide.Buy)
             {
@@ -80,7 +80,7 @@ public partial class TradingService(FolioDb db, FinnhubClient finnhub, MarketClo
                 account.Cash -= notional;
                 if (position is null)
                 {
-                    db.Positions.Add(new Position { Symbol = symbol, Quantity = qty, AvgCost = price });
+                    db.Positions.Add(new Position { AccountId = accountId, Symbol = symbol, Quantity = qty, AvgCost = price });
                 }
                 else
                 {
@@ -125,11 +125,12 @@ public partial class TradingService(FolioDb db, FinnhubClient finnhub, MarketClo
         try
         {
             await using var tx = await db.Database.BeginTransactionAsync(ct);
-            await db.Trades.ExecuteDeleteAsync(ct);
-            await db.Positions.ExecuteDeleteAsync(ct);
-            await db.Snapshots.ExecuteDeleteAsync(ct);
-            await db.Orders.ExecuteDeleteAsync(ct);
-            var account = await db.GetAccountAsync(ct);
+            var id = portfolio.Id;
+            await db.Trades.Where(t => t.AccountId == id).ExecuteDeleteAsync(ct);
+            await db.Positions.Where(p => p.AccountId == id).ExecuteDeleteAsync(ct);
+            await db.Snapshots.Where(s => s.AccountId == id).ExecuteDeleteAsync(ct);
+            await db.Orders.Where(o => o.AccountId == id).ExecuteDeleteAsync(ct);
+            var account = await db.GetAccountAsync(id, ct);
             account.StartingCash = account.Cash = Money(startingCash);
             account.RealizedPnl = 0;
             account.BenchmarkStartPrice = null; // re-captured by the next snapshot

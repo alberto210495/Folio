@@ -34,12 +34,15 @@ public record PortfolioView(
     bool AnyStale,
     DateTime AsOf);
 
-public class PortfolioService(FolioDb db, FinnhubClient finnhub)
+public class PortfolioService(FolioDb db, FinnhubClient finnhub, PortfolioContext portfolio)
 {
-    public async Task<PortfolioView> GetAsync(CancellationToken ct = default)
+    public Task<PortfolioView> GetAsync(CancellationToken ct = default) => GetAsync(portfolio.Id, ct);
+
+    public async Task<PortfolioView> GetAsync(int accountId, CancellationToken ct = default)
     {
-        var account = await db.GetAccountAsync(ct);
-        var positions = await db.Positions.AsNoTracking().ToListAsync(ct);
+        var account = await db.Accounts.AsNoTracking().FirstOrDefaultAsync(a => a.Id == accountId, ct)
+            ?? throw new PortfolioNotFoundException(accountId);
+        var positions = await db.Positions.AsNoTracking().Where(p => p.AccountId == accountId).ToListAsync(ct);
         var symbols = positions.Select(p => p.Symbol).ToList();
         var companies = await db.Companies.AsNoTracking()
             .Where(c => symbols.Contains(c.Symbol))
