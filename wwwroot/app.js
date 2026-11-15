@@ -9,7 +9,7 @@ const pct = new Intl.NumberFormat("en-US", { style: "percent", minimumFractionDi
 const shares = new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 });
 const timeFmt = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
 
-const state = { portfolio: null, quote: null, allocMode: "holding", configured: true, history: null, range: "1M", histClear: null, allocClear: null };
+const state = { portfolio: null, quote: null, allocMode: "holding", configured: true, history: null, range: "1M", histClear: null, allocClear: null, orders: null, knownOpenOrders: null };
 
 // ---------- helpers ----------
 function esc(s) {
@@ -46,17 +46,22 @@ function banner(html) {
 // ---------- loading ----------
 async function load() {
   try {
-    const [portfolio, trades, history] = await Promise.all([
+    const [portfolio, trades, history, openOrders, closedOrders] = await Promise.all([
       api("/api/portfolio"),
       api("/api/trades?limit=200"),
       api(`/api/history?range=${state.range}`).catch(() => null),
+      api("/api/orders?status=open"),
+      api("/api/orders?status=closed&limit=100"),
     ]);
+    notifyClosedOrders(openOrders, closedOrders);
     state.portfolio = portfolio;
     state.history = history;
+    state.orders = { open: openOrders, closed: closedOrders };
     renderHistory();
     renderKpis(portfolio);
     renderAllocation();
     renderHoldings(portfolio);
+    renderOrders();
     renderTrades(trades);
     $("#updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
 
@@ -440,7 +445,7 @@ function renderTrades(trades) {
   tbody.innerHTML = trades.map((t) => `
     <tr>
       <td>${timeFmt.format(new Date(t.executedAt + (t.executedAt.endsWith("Z") ? "" : "Z")))}</td>
-      <td><span class="side ${t.side === "Buy" ? "up" : "down"}">${t.side.toUpperCase()}</span></td>
+      <td><span class="side ${t.side === "Buy" ? "up" : "down"}">${t.side.toUpperCase()}${t.orderType && t.orderType !== "Market" ? ` · ${t.orderType.toUpperCase()}` : ""}</span></td>
       <td class="sym">${esc(t.symbol)}</td>
       <td class="num">${shares.format(t.quantity)}</td>
       <td class="num">${usd.format(t.price)}</td>
@@ -448,6 +453,103 @@ function renderTrades(trades) {
       <td class="num">${t.realizedPnl == null ? `<span class="muted">—</span>` : pnl(t.realizedPnl)}</td>
     </tr>`).join("");
 }
+
+// ---------- Orders ----------
+let ordersTab = "open";
+let toastTimer;
+
+function toast(text) {
+  const el = $("#toast");
+  el.textContent = text;
+  el.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.hidden = true; }, 8000);
+}
+
+function orderLabel(o) {
+  return `${o.side.toLowerCase()} ${o.type.toLowerCase()}`;
+}
+
+/** Tells you when an order that was open on the last refresh has since filled or been rejected. */
+function notifyClosedOrders(open, closed) {
+  const prev = state.knownOpenOrders;
+  state.knownOpenOrders = new Set(open.map((o) => o.id));
+  if (!prev) return; // first load: nothing to compare against
+  const msgs = closed
+    .filter((o) => prev.has(o.id) && o.status !== "Cancelled")
+    .map((o) => o.status === "Filled"
+      ? `Your ${orderLabel(o)} for ${shares.format(o.quantity)} ${o.symbol} filled at ${usd.format(o.fillPrice)}.`
+      : `Your ${orderLabel(o)} for ${o.symbol} was rejected: ${o.reason}`);
+  if (msgs.length) toast(msgs.join(" "));
+}
+
+function renderOrders() {
+  const { open = [], closed = [] } = state.orders ?? {};
+  $("#open-count").textContent = open.length ? `(${open.length})` : "";
+  const head = $("#orders-head");
+  const body = $("#orders");
+
+  if (ordersTab === "open") {
+    head.innerHTML = `<tr><th>Placed</th><th>Order</th><th>Symbol</th><th class="num">Shares</th><th class="num">Trigger</th><th class="num">Current</th><th class="num">Distance</th><th></th></tr>`;
+    if (!open.length) {
+      body.innerHTML = `<tr class="empty"><td colspan="8">No open orders. Choose Limit or Stop on the order form to place one.</td></tr>`;
+      return;
+    }
+    body.innerHTML = open.map((o) => {
+      const dist = o.currentPrice ? (o.price - o.currentPrice) / o.currentPrice : null;
+      return `
+      <tr>
+        <td>${timeFmt.format(new Date(o.createdAt))}</td>
+        <td><span class="side ${o.side === "Buy" ? "up" : "down"}">${o.side.toUpperCase()} · ${o.type.toUpperCase()}</span></td>
+        <td class="sym">${esc(o.symbol)}</td>
+        <td class="num">${shares.format(o.quantity)}</td>
+        <td class="num">${usd.format(o.price)}</td>
+        <td class="num">${o.currentPrice ? usd.format(o.currentPrice) : `<span class="muted">—</span>`}</td>
+        <td class="num">${dist == null ? `<span class="muted">—</span>` : `${signed(dist, pct)} <span class="muted">away</span>`}</td>
+        <td class="num"><button class="btn xs" data-cancel="${o.id}">Cancel</button></td>
+      </tr>`;
+    }).join("");
+  } else {
+    head.innerHTML = `<tr><th>Placed</th><th>Closed</th><th>Order</th><th>Symbol</th><th class="num">Shares</th><th class="num">Trigger</th><th>Result</th></tr>`;
+    if (!closed.length) {
+      body.innerHTML = `<tr class="empty"><td colspan="7">No filled, cancelled or rejected orders yet.</td></tr>`;
+      return;
+    }
+    body.innerHTML = closed.map((o) => `
+      <tr>
+        <td>${timeFmt.format(new Date(o.createdAt))}</td>
+        <td>${o.closedAt ? timeFmt.format(new Date(o.closedAt)) : ""}</td>
+        <td><span class="side ${o.side === "Buy" ? "up" : "down"}">${o.side.toUpperCase()} · ${o.type.toUpperCase()}</span></td>
+        <td class="sym">${esc(o.symbol)}</td>
+        <td class="num">${shares.format(o.quantity)}</td>
+        <td class="num">${usd.format(o.price)}</td>
+        <td><span class="status ${o.status.toLowerCase()}">${o.status === "Filled" ? `Filled at ${usd.format(o.fillPrice)}` : o.status}</span>${o.reason ? `<span class="reason">${esc(o.reason)}</span>` : ""}</td>
+      </tr>`).join("");
+  }
+}
+
+document.querySelectorAll("[data-orders]").forEach((btn) =>
+  btn.addEventListener("click", () => {
+    ordersTab = btn.dataset.orders;
+    document.querySelectorAll("[data-orders]").forEach((b) => b.setAttribute("aria-selected", String(b === btn)));
+    renderOrders();
+  })
+);
+
+$("#orders").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("[data-cancel]");
+  if (!btn) return;
+  btn.disabled = true;
+  try {
+    const o = await api(`/api/orders/${btn.dataset.cancel}`, { method: "DELETE" });
+    state.knownOpenOrders?.delete(o.id); // you cancelled it; no need to announce
+    toast(`Cancelled ${orderLabel(o)} for ${o.symbol}.`);
+    await load();
+  } catch (e) {
+    toast(e.message);
+    btn.disabled = false;
+  }
+});
 
 // ---------- Order ticket ----------
 const form = $("#trade-form");
@@ -466,15 +568,47 @@ function heldQty(sym) {
   return state.portfolio?.holdings.find((h) => h.symbol === sym)?.quantity ?? 0;
 }
 
+const otype = () => form.querySelector("input[name=otype]:checked").value;
+form.querySelectorAll("input[name=otype]").forEach((r) => r.addEventListener("change", () => {
+  prefillPrice(true);
+  updateTicket();
+}));
+$("#price").addEventListener("input", updateTicket);
+
+/** Seeds the limit/stop price with the current quote so you only have to nudge it. */
+function prefillPrice(force) {
+  const q = state.quote;
+  if (!q || otype() === "Market") return;
+  if (force || !$("#price").value) $("#price").value = q.price.toFixed(2);
+}
+
+const HINTS = {
+  "Buy|Limit": (p) => `Buys when the price is ${p} or lower.`,
+  "Sell|Limit": (p) => `Sells when the price is ${p} or higher.`,
+  "Buy|Stop": (p) => `Buys when the price rises to ${p} or higher.`,
+  "Sell|Stop": (p) => `Sells when the price falls to ${p} or lower (a stop-loss).`,
+};
+
 function updateTicket() {
   const s = side();
+  const type = otype();
   const submit = $("#submit");
-  submit.textContent = s;
+  submit.textContent = type === "Market" ? s : `Place ${s.toLowerCase()} ${type.toLowerCase()}`;
   submit.classList.toggle("sell", s === "Sell");
+
+  const resting = type !== "Market";
+  const limitPrice = parseFloat($("#price").value);
+  $("#price-field").hidden = !resting;
+  $("#price-label").textContent = `${type} price`;
+  const hint = $("#order-hint");
+  hint.hidden = !resting;
+  hint.textContent = resting ? HINTS[`${s}|${type}`](limitPrice > 0 ? usd.format(limitPrice) : "your price") +
+    " Fills at the market price when triggered." : "";
 
   const q = state.quote;
   const qty = parseFloat($("#qty").value);
-  $("#est").textContent = q && qty > 0 ? usd.format(q.price * qty) : "—";
+  const estPrice = resting ? limitPrice : q?.price;
+  $("#est").textContent = estPrice > 0 && qty > 0 ? usd.format(estPrice * qty) : "—";
 
   const held = q ? heldQty(q.symbol) : 0;
   $("#held").textContent = q
@@ -488,9 +622,11 @@ $("#qty").addEventListener("input", updateTicket);
 form.querySelector("[data-max]").addEventListener("click", () => {
   const q = state.quote;
   if (!q) return;
+  const limitPrice = parseFloat($("#price").value);
+  const price = otype() !== "Market" && limitPrice > 0 ? limitPrice : q.price;
   $("#qty").value = side() === "Sell"
     ? heldQty(q.symbol)
-    : Math.floor((state.portfolio?.cash ?? 0) / q.price);
+    : Math.floor((state.portfolio?.cash ?? 0) / price);
   updateTicket();
 });
 
@@ -502,7 +638,9 @@ async function selectSymbol(sym) {
   const msg = $("#trade-msg");
   try {
     const q = await api(`/api/quote/${encodeURIComponent(sym)}`);
+    const changed = state.quote?.symbol !== q.symbol;
     state.quote = q;
+    prefillPrice(changed);
     $("#quote").hidden = false;
     $("#q-sym").textContent = q.symbol;
     $("#q-price").textContent = usd.format(q.price) + (q.stale ? " (stale)" : "");
@@ -589,13 +727,28 @@ form.addEventListener("submit", async (ev) => {
   if (!symbol) { msg.className = "small msg down"; msg.textContent = "Choose a symbol."; return; }
   if (!(quantity > 0)) { msg.className = "small msg down"; msg.textContent = "Enter a share quantity."; return; }
 
+  const type = otype();
+  const price = parseFloat($("#price").value);
+  if (type !== "Market" && !(price > 0)) { msg.className = "small msg down"; msg.textContent = `Enter a ${type.toLowerCase()} price.`; return; }
+
   const submit = $("#submit");
   submit.disabled = true;
   try {
-    const t = await api("/api/trades", { method: "POST", body: JSON.stringify({ symbol, side: side(), quantity }) });
-    msg.className = "small msg up";
-    msg.textContent = `${t.side === "Buy" ? "Bought" : "Sold"} ${shares.format(t.quantity)} ${t.symbol} at ${usd.format(t.price)}` +
-      (t.realizedPnl != null ? ` · realized ${signed(t.realizedPnl)}` : "");
+    if (type === "Market") {
+      const t = await api("/api/trades", { method: "POST", body: JSON.stringify({ symbol, side: side(), quantity }) });
+      msg.className = "small msg up";
+      msg.textContent = `${t.side === "Buy" ? "Bought" : "Sold"} ${shares.format(t.quantity)} ${t.symbol} at ${usd.format(t.price)}` +
+        (t.realizedPnl != null ? ` · realized ${signed(t.realizedPnl)}` : "");
+    } else {
+      const o = await api("/api/orders", { method: "POST", body: JSON.stringify({ symbol, side: side(), type, quantity, price }) });
+      msg.className = o.status === "Rejected" ? "small msg down" : "small msg up";
+      msg.textContent = o.status === "Filled"
+        ? `Price was already there, so your ${orderLabel(o)} filled immediately: ${shares.format(o.quantity)} ${o.symbol} at ${usd.format(o.fillPrice)}.`
+        : o.status === "Rejected"
+          ? `Order rejected: ${o.reason}`
+          : `Placed ${orderLabel(o)}: ${shares.format(o.quantity)} ${o.symbol} at ${usd.format(o.price)}. It's in Open orders below.`;
+      if (o.status === "Open") state.knownOpenOrders?.add(o.id);
+    }
     $("#qty").value = "";
     await load();
   } catch (e) {
