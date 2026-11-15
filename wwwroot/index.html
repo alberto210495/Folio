@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Folio</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='4' fill='%232a78d6'/><path d='M4 11l3-3 2 2 3-4' stroke='white' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <span class="brand-name">Folio</span>
+      <span class="pill">Paper trading</span>
+    </div>
+    <div class="topbar-right">
+      <span id="updated" class="muted small" aria-live="polite"></span>
+      <button id="refresh" class="btn ghost" type="button" title="Refresh quotes">Refresh</button>
+      <button id="reset" class="btn ghost" type="button">Reset account</button>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div id="banner" class="banner" hidden></div>
+
+    <section class="kpis" aria-label="Account summary">
+      <div class="kpi hero">
+        <div class="kpi-label">Total value</div>
+        <div class="kpi-value" id="k-total">—</div>
+        <div class="kpi-sub" id="k-return">—</div>
+      </div>
+      <div class="kpi"><div class="kpi-label">Today</div><div class="kpi-value sm" id="k-day">—</div></div>
+      <div class="kpi"><div class="kpi-label">Cash</div><div class="kpi-value sm" id="k-cash">—</div></div>
+      <div class="kpi"><div class="kpi-label">Unrealized P&amp;L</div><div class="kpi-value sm" id="k-unreal">—</div></div>
+      <div class="kpi"><div class="kpi-label">Realized P&amp;L</div><div class="kpi-value sm" id="k-real">—</div></div>
+    </section>
+
+    <section class="card" aria-labelledby="hist-h">
+      <div class="card-head">
+        <div>
+          <h2 id="hist-h">Portfolio value</h2>
+          <div id="hist-change" class="small"></div>
+        </div>
+        <div class="tabs" role="tablist" aria-label="Time range">
+          <button role="tab" aria-selected="false" data-range="1D">1D</button>
+          <button role="tab" aria-selected="false" data-range="1W">1W</button>
+          <button role="tab" aria-selected="true" data-range="1M">1M</button>
+          <button role="tab" aria-selected="false" data-range="3M">3M</button>
+          <button role="tab" aria-selected="false" data-range="1Y">1Y</button>
+          <button role="tab" aria-selected="false" data-range="ALL">All</button>
+        </div>
+      </div>
+      <div id="hist-chart" class="hist-chart"></div>
+      <div id="hist-tip" class="tip" hidden></div>
+    </section>
+
+    <div class="grid">
+      <section class="card" aria-labelledby="trade-h">
+        <h2 id="trade-h">Place order</h2>
+        <form id="trade-form" autocomplete="off" novalidate>
+          <div class="seg" role="radiogroup" aria-label="Side">
+            <label><input type="radio" name="side" value="Buy" checked><span>Buy</span></label>
+            <label><input type="radio" name="side" value="Sell"><span>Sell</span></label>
+          </div>
+
+          <label class="field">
+            <span>Symbol</span>
+            <div class="combo">
+              <input id="symbol" name="symbol" placeholder="Search e.g. Apple or AAPL" spellcheck="false"
+                     role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="suggest">
+              <ul id="suggest" class="suggest" role="listbox" hidden></ul>
+            </div>
+          </label>
+
+          <div id="quote" class="quote" hidden>
+            <div><span id="q-sym" class="q-sym"></span> <span id="q-price" class="q-price"></span></div>
+            <div id="q-change" class="small"></div>
+          </div>
+
+          <label class="field">
+            <span>Shares</span>
+            <input id="qty" name="qty" type="number" min="0.0001" step="any" inputmode="decimal" placeholder="0">
+          </label>
+          <div class="qty-helpers small">
+            <button type="button" class="link" data-max>Max</button>
+            <span id="held" class="muted"></span>
+          </div>
+
+          <div class="est"><span class="muted">Estimated total</span><span id="est">—</span></div>
+          <button id="submit" class="btn primary block" type="submit">Buy</button>
+          <p id="trade-msg" class="small msg" role="status"></p>
+        </form>
+      </section>
+
+      <section class="card" aria-labelledby="alloc-h">
+        <div class="card-head">
+          <h2 id="alloc-h">Allocation</h2>
+          <div class="tabs" role="tablist">
+            <button role="tab" aria-selected="true" data-alloc="holding">By holding</button>
+            <button role="tab" aria-selected="false" data-alloc="sector">By sector</button>
+          </div>
+        </div>
+        <div id="alloc-bar" class="alloc-bar" role="img"></div>
+        <div id="alloc-tip" class="tip" hidden></div>
+        <table class="alloc-legend">
+          <thead class="sr-only"><tr><th>Name</th><th>Value</th><th>Weight</th></tr></thead>
+          <tbody id="alloc-rows"></tbody>
+        </table>
+      </section>
+    </div>
+
+    <section class="card" aria-labelledby="hold-h">
+      <h2 id="hold-h">Holdings</h2>
+      <div class="table-scroll">
+        <table class="data">
+          <thead>
+            <tr>
+              <th>Symbol</th><th class="num">Shares</th><th class="num">Avg cost</th><th class="num">Price</th>
+              <th class="num">Market value</th><th class="num">Today</th><th class="num">Unrealized P&amp;L</th>
+              <th class="num">Weight</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="holdings"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="trades-h">
+      <h2 id="trades-h">Trade history</h2>
+      <div class="table-scroll">
+        <table class="data">
+          <thead>
+            <tr><th>Time</th><th>Side</th><th>Symbol</th><th class="num">Shares</th><th class="num">Price</th><th class="num">Total</th><th class="num">Realized P&amp;L</th></tr>
+          </thead>
+          <tbody id="trades"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <p class="muted small foot">Simulated trades at Finnhub's latest price. Quotes may be delayed. Not investment advice.</p>
+  </main>
+
+  <dialog id="reset-dlg">
+    <form method="dialog" class="dlg">
+      <h2>Reset account</h2>
+      <p class="muted">Deletes all positions and trade history. This can't be undone.</p>
+      <label class="field"><span>Starting cash</span><input id="reset-cash" type="number" min="1" step="any" value="100000"></label>
+      <div class="dlg-actions">
+        <button value="cancel" class="btn ghost" formnovalidate>Cancel</button>
+        <button value="ok" class="btn danger">Reset</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="app.js" type="module"></script>
+</body>
+</html>
