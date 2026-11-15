@@ -69,10 +69,12 @@ public sealed class TestApp : IDisposable
     private readonly DbContextOptions<FolioDb> _dbOptions;
     public FakeFinnhub Finnhub { get; } = new();
     public FakeTime Time { get; } = new();
+    public LivePrices Live { get; }
     public FolioOptions Settings { get; } = new();
 
     public TestApp()
     {
+        Live = new LivePrices(Time);
         _conn.Open();
         _dbOptions = new DbContextOptionsBuilder<FolioDb>().UseSqlite(_conn).Options;
         using var db = new FolioDb(_dbOptions);
@@ -102,6 +104,7 @@ public sealed class TestApp : IDisposable
                 http,
                 new MemoryCache(new MemoryCacheOptions()),
                 Options.Create(new FinnhubOptions { ApiKey = "test" }),
+                app.Live,
                 NullLogger<FinnhubClient>.Instance);
             var clock = new MarketClock(app.Time, Options.Create(app.Settings));
             Trading = new TradingService(Db, Finnhub, clock, NullLogger<TradingService>.Instance);

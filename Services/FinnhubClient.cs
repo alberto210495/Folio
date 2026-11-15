@@ -12,6 +12,9 @@ public class FinnhubOptions
     public string BaseUrl { get; set; } = "https://finnhub.io/api/v1/";
     /// <summary>How long a quote is served from cache. Keeps us well under the free 60 calls/min.</summary>
     public int QuoteCacheSeconds { get; set; } = 15;
+    /// <summary>Stream trade prices over Finnhub's websocket (one connection, up to 50 symbols on the free tier).</summary>
+    public bool Streaming { get; set; } = true;
+    public string StreamUrl { get; set; } = "wss://ws.finnhub.io";
 }
 
 public record Quote(
@@ -36,16 +39,25 @@ public class FinnhubException(string message, HttpStatusCode? status = null) : E
 /// Thin Finnhub wrapper. Quotes are cached briefly; if Finnhub fails (rate limit, outage)
 /// the last good quote is returned flagged <see cref="Quote.Stale"/>.
 /// </summary>
-public class FinnhubClient(HttpClient http, IMemoryCache cache, IOptions<FinnhubOptions> options, ILogger<FinnhubClient> log)
+public class FinnhubClient(HttpClient http, IMemoryCache cache, IOptions<FinnhubOptions> options, LivePrices live, ILogger<FinnhubClient> log)
 {
     private static readonly ConcurrentDictionary<string, Quote> LastKnown = new(StringComparer.OrdinalIgnoreCase);
     private readonly FinnhubOptions _opt = options.Value;
 
     public bool IsConfigured => !string.IsNullOrWhiteSpace(_opt.ApiKey);
 
+    /// <summary>
+    /// Latest quote: the REST quote (cached briefly; previous close and fallback) with the newest streamed
+    /// trade price on top when there is one.
+    /// </summary>
     public async Task<Quote?> GetQuoteAsync(string symbol, CancellationToken ct = default)
     {
-        symbol = symbol.ToUpperInvariant();
+        var quote = await GetRestQuoteAsync(symbol.ToUpperInvariant(), ct);
+        return quote is null ? null : live.Merge(quote);
+    }
+
+    private async Task<Quote?> GetRestQuoteAsync(string symbol, CancellationToken ct)
+    {
         var key = $"quote:{symbol}";
         if (cache.TryGetValue(key, out Quote? cached)) return cached;
 

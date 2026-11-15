@@ -121,15 +121,17 @@ public class OrderService(FolioDb db, TradingService trading, FinnhubClient finn
         }
     }
 
-    /// <summary>Checks every open order against a live quote. Returns how many filled.</summary>
-    public async Task<int> CheckOpenOrdersAsync(CancellationToken ct = default)
+    /// <summary>Checks open orders (all, or one symbol's) against a live quote. Returns how many filled.</summary>
+    public async Task<int> CheckOpenOrdersAsync(CancellationToken ct = default) => await CheckOpenOrdersAsync(null, ct);
+
+    public async Task<int> CheckOpenOrdersAsync(string? symbol, CancellationToken ct = default)
     {
         // Outside market hours prices don't move (and fills would use the last close), so skip the quotes.
         if (!clock.CanTrade()) return 0;
         await OrderLock.WaitAsync(ct);
         try
         {
-            var open = await db.Orders.Where(o => o.Status == OrderStatus.Open).ToListAsync(ct);
+            var open = await db.Orders.Where(o => o.Status == OrderStatus.Open && (symbol == null || o.Symbol == symbol)).ToListAsync(ct);
             var filled = 0;
 
             foreach (var group in open.GroupBy(o => o.Symbol))
@@ -215,27 +217,105 @@ public class OrderService(FolioDb db, TradingService trading, FinnhubClient finn
     private static string Usd(decimal v) => v.ToString("C", System.Globalization.CultureInfo.GetCultureInfo("en-US"));
 }
 
-/// <summary>Checks open orders every <see cref="FolioOptions.OrderCheckSeconds"/> while the app runs.</summary>
-public class OrderWorker(IServiceScopeFactory scopes, IOptions<FolioOptions> options, ILogger<OrderWorker> log) : BackgroundService
+/// <summary>
+/// Fills resting orders. Checks all of them every <see cref="FolioOptions.OrderCheckSeconds"/>, and checks a
+/// symbol straight away when a streamed trade crosses one of its orders' prices.
+/// </summary>
+public class OrderWorker(IServiceScopeFactory scopes, LivePrices live, IOptions<FolioOptions> options, ILogger<OrderWorker> log) : BackgroundService
 {
+    private static readonly TimeSpan RefreshEvery = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan SymbolCooldown = TimeSpan.FromSeconds(2);
+
+    private readonly System.Threading.Channels.Channel<string> _triggered =
+        System.Threading.Channels.Channel.CreateUnbounded<string>(new() { SingleReader = true });
+    private volatile Order[] _open = [];
+    private readonly Dictionary<string, DateTimeOffset> _lastChecked = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Runs on the stream's thread: compares the tick with the cached open orders, no I/O.</summary>
+    private void OnTick(LiveTick tick)
+    {
+        if (!live.Counts(tick)) return;
+        foreach (var o in _open)
+            if (string.Equals(o.Symbol, tick.Symbol, StringComparison.OrdinalIgnoreCase) && OrderService.IsTriggered(o.Side, o.Type, o.Price, tick.Price))
+            {
+                _triggered.Writer.TryWrite(o.Symbol);
+                return;
+            }
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(Math.Max(15, options.Value.OrderCheckSeconds)));
-        while (await timer.WaitForNextTickAsync(stoppingToken))
+        var fullEvery = TimeSpan.FromSeconds(Math.Max(15, options.Value.OrderCheckSeconds));
+        var nextFull = DateTimeOffset.UtcNow + fullEvery;
+        var nextRefresh = DateTimeOffset.UtcNow;
+        live.Ticked += OnTick;
+        try
         {
-            try
+            while (!stoppingToken.IsCancellationRequested)
             {
-                using var scope = scopes.CreateScope();
-                if (!scope.ServiceProvider.GetRequiredService<FinnhubClient>().IsConfigured) continue;
+                var now = DateTimeOffset.UtcNow;
+                if (now >= nextRefresh)
+                {
+                    await RefreshOpenAsync(stoppingToken);
+                    nextRefresh = now + RefreshEvery;
+                }
+                if (now >= nextFull)
+                {
+                    await CheckAsync(null, stoppingToken);
+                    nextFull = now + fullEvery;
+                }
 
-                var filled = await scope.ServiceProvider.GetRequiredService<OrderService>().CheckOpenOrdersAsync(stoppingToken);
-                if (filled > 0)
-                    await scope.ServiceProvider.GetRequiredService<SnapshotService>().RecordAsync(stoppingToken);
+                var wake = (nextRefresh < nextFull ? nextRefresh : nextFull) - DateTimeOffset.UtcNow;
+                using var wait = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                wait.CancelAfter(wake > TimeSpan.Zero ? wake : TimeSpan.Zero);
+                string symbol;
+                try { symbol = await _triggered.Reader.ReadAsync(wait.Token); }
+                catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested) { continue; }
+
+                // Coalesce a burst of ticks for the same symbol into one check.
+                if (_lastChecked.TryGetValue(symbol, out var last) && DateTimeOffset.UtcNow - last < SymbolCooldown) continue;
+                _lastChecked[symbol] = DateTimeOffset.UtcNow;
+                await CheckAsync(symbol, stoppingToken);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
+        finally
+        {
+            live.Ticked -= OnTick;
+        }
+    }
+
+    private async Task RefreshOpenAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var scope = scopes.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<FolioDb>();
+            _open = await db.Orders.AsNoTracking().Where(o => o.Status == OrderStatus.Open).ToArrayAsync(ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            log.LogWarning(ex, "Couldn't load open orders");
+        }
+    }
+
+    private async Task CheckAsync(string? symbol, CancellationToken ct)
+    {
+        try
+        {
+            using var scope = scopes.CreateScope();
+            if (!scope.ServiceProvider.GetRequiredService<FinnhubClient>().IsConfigured) return;
+
+            var filled = await scope.ServiceProvider.GetRequiredService<OrderService>().CheckOpenOrdersAsync(symbol, ct);
+            if (filled > 0)
             {
-                log.LogWarning(ex, "Order check failed");
+                await scope.ServiceProvider.GetRequiredService<SnapshotService>().RecordAsync(ct);
+                await RefreshOpenAsync(ct);
             }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            log.LogWarning(ex, "Order check failed");
         }
     }
 }

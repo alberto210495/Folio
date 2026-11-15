@@ -13,6 +13,7 @@ public record WatchItemView(
     decimal? Price,
     decimal? Change,
     decimal? ChangePercent,
+    decimal? PreviousClose,
     bool Stale,
     decimal HeldQuantity,
     DateTime AddedAt);
@@ -96,6 +97,7 @@ public class WatchlistService(FolioDb db, FinnhubClient finnhub, TradingService 
                 q?.Price,
                 q?.Change,
                 q?.ChangePercent,
+                q?.PreviousClose,
                 Stale: q is null || q.Stale,
                 held.GetValueOrDefault(i.Symbol),
                 i.AddedAt);

@@ -74,6 +74,16 @@ button, input { font: inherit; color: inherit; }
 .market.open .dot { background: var(--up); }
 .hint.warn { color: var(--warn-ink); background: var(--warn-bg); padding: 8px 10px; border-radius: 8px; }
 @media (max-width: 640px) { .market .muted { display: none; } }
+.live { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+.live .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.live.on { color: var(--ink-2); }
+.live.on .dot { background: var(--up); animation: live-pulse 2s ease-in-out infinite; }
+@keyframes live-pulse { 50% { opacity: .35; } }
+.tick-up { animation: tick-up 900ms ease-out; }
+.tick-down { animation: tick-down 900ms ease-out; }
+@keyframes tick-up { from { background: color-mix(in srgb, var(--up) 22%, transparent); } }
+@keyframes tick-down { from { background: color-mix(in srgb, var(--down) 22%, transparent); } }
+@media (prefers-reduced-motion: reduce) { .live.on .dot, .tick-up, .tick-down { animation: none; } }
 
 .wrap { max-width: 1200px; margin: 0 auto; padding: 20px 24px 40px; display: flex; flex-direction: column; gap: 16px; }
 
