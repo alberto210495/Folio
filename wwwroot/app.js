@@ -9,7 +9,7 @@ const pct = new Intl.NumberFormat("en-US", { style: "percent", minimumFractionDi
 const shares = new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 });
 const timeFmt = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
 
-const state = { portfolio: null, quote: null, allocMode: "holding", configured: true, history: null, range: "1M", histClear: null, allocClear: null, orders: null, knownOpenOrders: null };
+const state = { portfolio: null, quote: null, allocMode: "holding", configured: true, history: null, range: "1M", histClear: null, allocClear: null, orders: null, knownOpenOrders: null, watchlist: [] };
 
 // ---------- helpers ----------
 function esc(s) {
@@ -46,22 +46,25 @@ function banner(html) {
 // ---------- loading ----------
 async function load() {
   try {
-    const [portfolio, trades, history, openOrders, closedOrders] = await Promise.all([
+    const [portfolio, trades, history, openOrders, closedOrders, watchlist] = await Promise.all([
       api("/api/portfolio"),
       api("/api/trades?limit=200"),
       api(`/api/history?range=${state.range}`).catch(() => null),
       api("/api/orders?status=open"),
       api("/api/orders?status=closed&limit=100"),
+      api("/api/watchlist").catch(() => state.watchlist),
     ]);
     notifyClosedOrders(openOrders, closedOrders);
     state.portfolio = portfolio;
     state.history = history;
     state.orders = { open: openOrders, closed: closedOrders };
+    state.watchlist = watchlist;
     renderHistory();
     renderKpis(portfolio);
     renderAllocation();
     renderHoldings(portfolio);
     renderOrders();
+    renderWatchlist();
     renderTrades(trades);
     $("#updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
 
@@ -425,15 +428,19 @@ function renderHoldings(p) {
     </tr>`).join("");
 }
 
-$("#holdings").addEventListener("click", (ev) => {
-  const btn = ev.target.closest("[data-trade]");
-  if (!btn) return;
-  setSide(btn.dataset.side);
-  $("#symbol").value = btn.dataset.trade;
-  $("#qty").value = btn.dataset.qty || "";
-  selectSymbol(btn.dataset.trade);
+/** Loads a symbol into the order form, e.g. from a Buy/Sell button. */
+function openTicket(sym, sideName, qty = "") {
+  setSide(sideName);
+  $("#symbol").value = sym;
+  $("#qty").value = qty;
+  selectSymbol(sym);
   $("#qty").focus();
   $("#trade-form").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+$("#holdings").addEventListener("click", (ev) => {
+  const btn = ev.target.closest("[data-trade]");
+  if (btn) openTicket(btn.dataset.trade, btn.dataset.side, btn.dataset.qty || "");
 });
 
 function renderTrades(trades) {
@@ -551,6 +558,98 @@ $("#orders").addEventListener("click", async (ev) => {
   }
 });
 
+// ---------- Watchlist ----------
+const isWatched = (sym) => state.watchlist.some((w) => w.symbol === sym);
+
+function renderWatchlist() {
+  const list = state.watchlist;
+  $("#watch-count").textContent = list.length ? `(${list.length})` : "";
+  const tbody = $("#watchlist");
+  if (!list.length) {
+    tbody.innerHTML = `<tr class="empty"><td colspan="5">Nothing on your watchlist. Add a ticker above, or tap ☆ next to a quote in the order form.</td></tr>`;
+  } else {
+    tbody.innerHTML = list.map((w) => `
+    <tr>
+      <td><button class="sym-link" type="button" data-trade="${esc(w.symbol)}" data-side="Buy" title="Open in order form">${esc(w.symbol)}</button>${w.stale ? `<span class="stale">${w.price == null ? "no quote" : "stale"}</span>` : ""}<span class="co">${esc(w.name || "")}</span></td>
+      <td class="num">${w.price == null ? `<span class="muted">—</span>` : usd.format(w.price)}</td>
+      <td class="num">${w.change == null ? `<span class="muted">—</span>` : pnl(w.change, w.changePercent)}</td>
+      <td class="num">${w.heldQuantity ? shares.format(w.heldQuantity) : `<span class="muted">—</span>`}</td>
+      <td class="num"><button class="btn xs" type="button" data-trade="${esc(w.symbol)}" data-side="Buy">Buy</button> <button class="btn xs icon" type="button" data-unwatch="${esc(w.symbol)}" aria-label="Remove ${esc(w.symbol)} from watchlist" title="Remove">✕</button></td>
+    </tr>`).join("");
+  }
+  paintStar();
+}
+
+function paintStar() {
+  const btn = $("#q-watch");
+  const sym = state.quote?.symbol;
+  const on = !!sym && isWatched(sym);
+  btn.textContent = on ? "★" : "☆";
+  btn.setAttribute("aria-pressed", String(on));
+  btn.title = on ? `Remove ${sym} from watchlist` : sym ? `Add ${sym} to watchlist` : "Add to watchlist";
+  btn.setAttribute("aria-label", btn.title);
+}
+
+async function addToWatchlist(sym) {
+  const item = await api("/api/watchlist", { method: "POST", body: JSON.stringify({ symbol: sym }) });
+  if (!isWatched(item.symbol)) state.watchlist = [...state.watchlist, item];
+  renderWatchlist();
+  return item;
+}
+
+async function removeFromWatchlist(sym) {
+  await api(`/api/watchlist/${encodeURIComponent(sym)}`, { method: "DELETE" }).catch((e) => {
+    if (!/isn't on your watchlist/.test(e.message)) throw e; // already gone is fine
+  });
+  state.watchlist = state.watchlist.filter((w) => w.symbol !== sym);
+  renderWatchlist();
+}
+
+$("#watch-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const input = $("#watch-input");
+  const msg = $("#watch-msg");
+  const sym = input.value.trim().toUpperCase();
+  if (!sym) return;
+  msg.textContent = "";
+  try {
+    await addToWatchlist(sym);
+    input.value = "";
+  } catch (e) {
+    msg.textContent = e.message;
+  }
+});
+
+$("#watchlist").addEventListener("click", async (ev) => {
+  const trade = ev.target.closest("[data-trade]");
+  if (trade) return openTicket(trade.dataset.trade, trade.dataset.side);
+  const rm = ev.target.closest("[data-unwatch]");
+  if (!rm) return;
+  rm.disabled = true;
+  try {
+    await removeFromWatchlist(rm.dataset.unwatch);
+  } catch (e) {
+    $("#watch-msg").textContent = e.message;
+    rm.disabled = false;
+  }
+});
+
+$("#q-watch").addEventListener("click", async () => {
+  const sym = state.quote?.symbol;
+  if (!sym) return;
+  try {
+    if (isWatched(sym)) {
+      await removeFromWatchlist(sym);
+      toast(`Removed ${sym} from your watchlist.`);
+    } else {
+      await addToWatchlist(sym);
+      toast(`Added ${sym} to your watchlist.`);
+    }
+  } catch (e) {
+    toast(e.message);
+  }
+});
+
 // ---------- Order ticket ----------
 const form = $("#trade-form");
 const symbolInput = $("#symbol");
@@ -645,6 +744,7 @@ async function selectSymbol(sym) {
     $("#q-sym").textContent = q.symbol;
     $("#q-price").textContent = usd.format(q.price) + (q.stale ? " (stale)" : "");
     $("#q-change").innerHTML = pnl(q.change, q.changePercent) + ` <span class="muted">today</span>`;
+    paintStar();
     msg.textContent = "";
   } catch (e) {
     state.quote = null;

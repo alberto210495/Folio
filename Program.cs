@@ -24,6 +24,7 @@ builder.Services.AddScoped<SnapshotService>();
 builder.Services.AddHostedService<SnapshotWorker>();
 builder.Services.AddScoped<OrderService>();
 builder.Services.AddHostedService<OrderWorker>();
+builder.Services.AddScoped<WatchlistService>();
 
 builder.Services.ConfigureHttpJsonOptions(o =>
     o.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
@@ -108,6 +109,19 @@ api.MapPost("/trades", async (TradeRequest req, TradingService t, SnapshotServic
     try { await s.RecordAsync(ct); } catch (FinnhubException) { /* chart point is best-effort */ }
     return Results.Created("/api/trades", trade);
 });
+
+api.MapGet("/watchlist", (WatchlistService w, CancellationToken ct) => w.ListAsync(ct));
+
+api.MapPost("/watchlist", async (WatchlistAddRequest req, WatchlistService w, CancellationToken ct) =>
+{
+    var item = await w.AddAsync(req.Symbol, ct);
+    return Results.Created($"/api/watchlist/{item.Symbol}", item);
+});
+
+api.MapDelete("/watchlist/{symbol}", async (string symbol, WatchlistService w, CancellationToken ct) =>
+    await w.RemoveAsync(symbol, ct)
+        ? Results.NoContent()
+        : Results.NotFound(new { error = $"{symbol.ToUpperInvariant()} isn't on your watchlist." }));
 
 api.MapGet("/history", (string? range, SnapshotService s, CancellationToken ct) => s.GetHistoryAsync(range, ct));
 

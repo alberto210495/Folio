@@ -83,7 +83,10 @@
 
           <div id="quote" class="quote" hidden>
             <div><span id="q-sym" class="q-sym"></span> <span id="q-price" class="q-price"></span></div>
-            <div id="q-change" class="small"></div>
+            <div class="q-right">
+              <span id="q-change" class="small"></span>
+              <button id="q-watch" class="star" type="button" aria-pressed="false" title="Add to watchlist">☆</button>
+            </div>
           </div>
 
           <div class="field">
@@ -145,6 +148,25 @@
             </tr>
           </thead>
           <tbody id="holdings"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="watch-h">
+      <div class="card-head">
+        <h2 id="watch-h">Watchlist <span id="watch-count" class="muted small"></span></h2>
+        <form id="watch-form" class="watch-add" autocomplete="off" novalidate>
+          <input id="watch-input" placeholder="Add ticker, e.g. NVDA" spellcheck="false" aria-label="Ticker to watch" maxlength="20">
+          <button class="btn xs" type="submit">Add</button>
+        </form>
+      </div>
+      <p id="watch-msg" class="small msg down watch-msg" role="status"></p>
+      <div class="table-scroll">
+        <table class="data">
+          <thead>
+            <tr><th>Symbol</th><th class="num">Price</th><th class="num">Today</th><th class="num">You hold</th><th></th></tr>
+          </thead>
+          <tbody id="watchlist"></tbody>
         </table>
       </div>
     </section>
