@@ -25,6 +25,7 @@ The SQLite file `folio.db` is created on first run. The account starts with $100
 - **Unrealized P&L** and **Today** use live quotes. Total return = (cash + holdings) − starting cash.
 - **Sector** comes from Finnhub's `/stock/profile2` and is cached in the `Companies` table on first buy. ETFs have no profile on the free tier, so they show as "Other".
 - **Value over time:** a background job saves the account value at startup and every 15 minutes while the app runs, and again after each trade. A snapshot is skipped if any price is stale, or if the value hasn't changed since the last one (for example, when markets are closed). The chart always ends at the current live value. History only covers periods when Folio was running.
+- **S&P 500 comparison:** each snapshot also stores SPY's price. The orange line shows what your starting cash would be worth if it had all gone into SPY when the account started. You can change the ticker with `Folio:BenchmarkSymbol` in `appsettings.json`. Free Finnhub has no historical prices, so the comparison begins when the first snapshot is saved.
 - **Rate limits:** the free tier allows 60 calls/min. Quotes are cached for 15s (`Finnhub:QuoteCacheSeconds`) and the UI refreshes every 60s while the tab is visible. If Finnhub fails, holdings show the last known price marked *stale*, and trading pauses until live prices return.
 
 ## API
@@ -40,6 +41,14 @@ The SQLite file `folio.db` is created on first run. The account starts with $100
 | POST | `/api/portfolio/reset` | `{ "startingCash": 100000 }` (wipes positions and trades) |
 
 Errors return `{ "error": "..." }`: 400 for rejected orders, 429 or 503 for Finnhub problems.
+
+## Tests
+
+```sh
+dotnet test Folio.slnx
+```
+
+xUnit tests in `tests/Folio.Tests` cover trading (average cost, realized P&L, rounding, rejections), reset, valuation, snapshots and the benchmark maths. They use a fake Finnhub and an in-memory SQLite database with the real migrations, so they need neither an API key nor a network connection.
 
 ## Notes
 

@@ -51,6 +51,14 @@
           <button role="tab" aria-selected="false" data-range="ALL">All</button>
         </div>
       </div>
+      <div class="legend small">
+        <span class="legend-item"><span class="sw-line" style="background:var(--s1)"></span>Your portfolio</span>
+        <label class="legend-item toggle" id="bench-legend" hidden>
+          <input type="checkbox" id="bench-toggle" checked>
+          <span class="sw-line" style="background:var(--s2)"></span><span id="bench-name">S&amp;P 500 (SPY)</span>
+          <span class="muted">· same starting cash, all in from day one</span>
+        </label>
+      </div>
       <div id="hist-chart" class="hist-chart"></div>
       <div id="hist-tip" class="tip" hidden></div>
     </section>

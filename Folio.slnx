@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/tests/">
+    <Project Path="tests/Folio.Tests/Folio.Tests.csproj" />
+  </Folder>
+  <Project Path="Folio.csproj" />
+</Solution>

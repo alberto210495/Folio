@@ -8,6 +8,8 @@ public class Account
     public decimal Cash { get; set; }
     public decimal RealizedPnl { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    /// <summary>Benchmark (SPY) price when the account started; baseline for the comparison line.</summary>
+    public decimal? BenchmarkStartPrice { get; set; }
 }
 
 /// <summary>An open holding. Removed when quantity reaches zero.</summary>
@@ -54,4 +56,6 @@ public class PortfolioSnapshot
     public decimal TotalValue { get; set; }
     public decimal Cash { get; set; }
     public decimal HoldingsValue { get; set; }
+    /// <summary>Benchmark (SPY) price at the same moment, when it was available.</summary>
+    public decimal? BenchmarkPrice { get; set; }
 }
