@@ -74,6 +74,7 @@ public sealed class TestApp : IDisposable
         public PortfolioService Portfolio { get; }
         public SnapshotService Snapshots { get; }
         public OrderService Orders { get; }
+        public WatchlistService Watchlist { get; }
 
         internal Scope(TestApp app)
         {
@@ -88,6 +89,7 @@ public sealed class TestApp : IDisposable
             Portfolio = new PortfolioService(Db, Finnhub);
             Snapshots = new SnapshotService(Db, Portfolio, Finnhub, Options.Create(new FolioOptions()));
             Orders = new OrderService(Db, Trading, Finnhub, NullLogger<OrderService>.Instance);
+            Watchlist = new WatchlistService(Db, Finnhub, Trading);
         }
 
         public Task<OrderView> Place(string symbol, TradeSide side, OrderType type, decimal qty, decimal price) =>

@@ -86,3 +86,10 @@ public class Order
     /// <summary>Why the order was rejected at fill time (e.g. not enough cash by then).</summary>
     public string? Reason { get; set; }
 }
+
+/// <summary>A symbol you're following without holding it. Not account data, so a reset keeps it.</summary>
+public class WatchlistItem
+{
+    public required string Symbol { get; set; }
+    public DateTime AddedAt { get; set; } = DateTime.UtcNow;
+}

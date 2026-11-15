@@ -213,6 +213,22 @@ namespace Folio.Data.Migrations
 
                     b.ToTable("Trades");
                 });
+
+            modelBuilder.Entity("Folio.Data.WatchlistItem", b =>
+                {
+                    b.Property<string>("Symbol")
+                        .HasMaxLength(20)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("AddedAt")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Symbol");
+
+                    b.HasIndex("AddedAt");
+
+                    b.ToTable("Watchlist");
+                });
 #pragma warning restore 612, 618
         }
     }

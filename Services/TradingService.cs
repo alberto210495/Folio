@@ -141,7 +141,7 @@ public partial class TradingService(FolioDb db, FinnhubClient finnhub, ILogger<T
     }
 
     /// <summary>Best-effort: cache name/industry for the sector chart. Failure never blocks a trade.</summary>
-    private async Task EnsureCompanyAsync(string symbol, CancellationToken ct)
+    public async Task EnsureCompanyAsync(string symbol, CancellationToken ct)
     {
         try
         {

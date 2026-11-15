@@ -13,6 +13,7 @@ public class FolioDb(DbContextOptions<FolioDb> options) : DbContext(options)
     public DbSet<Company> Companies => Set<Company>();
     public DbSet<PortfolioSnapshot> Snapshots => Set<PortfolioSnapshot>();
     public DbSet<Order> Orders => Set<Order>();
+    public DbSet<WatchlistItem> Watchlist => Set<WatchlistItem>();
 
     // SQLite has no timezone-aware type; everything is stored as UTC, so mark it UTC on the way out.
     protected override void ConfigureConventions(ModelConfigurationBuilder c) =>
@@ -43,6 +44,10 @@ public class FolioDb(DbContextOptions<FolioDb> options) : DbContext(options)
         b.Entity<Order>().Property(o => o.Type).HasConversion<string>().HasMaxLength(5);
         b.Entity<Order>().Property(o => o.Status).HasConversion<string>().HasMaxLength(9);
         b.Entity<Order>().Property(o => o.Reason).HasMaxLength(300);
+
+        b.Entity<WatchlistItem>().HasKey(w => w.Symbol);
+        b.Entity<WatchlistItem>().Property(w => w.Symbol).HasMaxLength(20);
+        b.Entity<WatchlistItem>().HasIndex(w => w.AddedAt);
     }
 
     public async Task<Account> GetAccountAsync(CancellationToken ct = default)
