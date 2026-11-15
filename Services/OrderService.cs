@@ -21,7 +21,7 @@ public record OrderView(
     decimal? CurrentPrice);
 
 /// <summary>Places, cancels and fills resting limit and stop orders.</summary>
-public class OrderService(FolioDb db, TradingService trading, FinnhubClient finnhub, ILogger<OrderService> log)
+public class OrderService(FolioDb db, TradingService trading, FinnhubClient finnhub, MarketClock clock, ILogger<OrderService> log)
 {
     // Serialises order checks and cancels so an order can't be cancelled mid-fill.
     private static readonly SemaphoreSlim OrderLock = new(1, 1);
@@ -54,7 +54,8 @@ public class OrderService(FolioDb db, TradingService trading, FinnhubClient finn
         {
             var where = req.Side == TradeSide.Buy ? "above" : "below";
             throw new TradeRejectedException(
-                $"A {req.Side.ToString().ToLowerInvariant()} stop must be {where} the current price ({Usd(quote.Price)}). Use a market order to trade now.");
+                $"A {req.Side.ToString().ToLowerInvariant()} stop must be {where} the current price ({Usd(quote.Price)})." +
+                (clock.CanTrade() ? " Use a market order to trade now." : ""));
         }
 
         // Held for validation, save and any immediate fill, so the background check can't
@@ -87,8 +88,9 @@ public class OrderService(FolioDb db, TradingService trading, FinnhubClient finn
             db.Orders.Add(order);
             await db.SaveChangesAsync(ct);
 
-            // A limit that's already marketable fills right away, like at a real broker.
-            if (triggeredNow) await TryFillAsync(order, quote.Price, ct);
+            // A limit that's already marketable fills right away, like at a real broker; while the
+            // market is closed it waits for the open instead of filling on the last close.
+            if (triggeredNow && clock.CanTrade()) await TryFillAsync(order, quote.Price, ct);
 
             return ToView(order, quote.Price);
         }
@@ -122,6 +124,8 @@ public class OrderService(FolioDb db, TradingService trading, FinnhubClient finn
     /// <summary>Checks every open order against a live quote. Returns how many filled.</summary>
     public async Task<int> CheckOpenOrdersAsync(CancellationToken ct = default)
     {
+        // Outside market hours prices don't move (and fills would use the last close), so skip the quotes.
+        if (!clock.CanTrade()) return 0;
         await OrderLock.WaitAsync(ct);
         try
         {

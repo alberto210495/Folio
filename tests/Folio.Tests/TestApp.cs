@@ -52,6 +52,13 @@ public sealed class FakeFinnhub : HttpMessageHandler
     }
 }
 
+/// <summary>A settable clock. Defaults to a Wednesday at 10:00 AM ET, when the market is open.</summary>
+public sealed class FakeTime : TimeProvider
+{
+    public DateTimeOffset Now { get; set; } = new(2026, 11, 18, 15, 0, 0, TimeSpan.Zero);
+    public override DateTimeOffset GetUtcNow() => Now;
+}
+
 /// <summary>
 /// One in-memory SQLite database (real migrations applied) shared by every <see cref="Scope"/>.
 /// Each scope gets a fresh DbContext and quote cache, so price changes are seen immediately.
@@ -61,6 +68,8 @@ public sealed class TestApp : IDisposable
     private readonly SqliteConnection _conn = new("Data Source=:memory:");
     private readonly DbContextOptions<FolioDb> _dbOptions;
     public FakeFinnhub Finnhub { get; } = new();
+    public FakeTime Time { get; } = new();
+    public FolioOptions Settings { get; } = new();
 
     public TestApp()
     {
@@ -94,10 +103,11 @@ public sealed class TestApp : IDisposable
                 new MemoryCache(new MemoryCacheOptions()),
                 Options.Create(new FinnhubOptions { ApiKey = "test" }),
                 NullLogger<FinnhubClient>.Instance);
-            Trading = new TradingService(Db, Finnhub, NullLogger<TradingService>.Instance);
+            var clock = new MarketClock(app.Time, Options.Create(app.Settings));
+            Trading = new TradingService(Db, Finnhub, clock, NullLogger<TradingService>.Instance);
             Portfolio = new PortfolioService(Db, Finnhub);
             Snapshots = new SnapshotService(Db, Portfolio, Finnhub, Options.Create(new FolioOptions()));
-            Orders = new OrderService(Db, Trading, Finnhub, NullLogger<OrderService>.Instance);
+            Orders = new OrderService(Db, Trading, Finnhub, clock, NullLogger<OrderService>.Instance);
             Watchlist = new WatchlistService(Db, Finnhub, Trading);
         }
 

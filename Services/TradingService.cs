@@ -9,7 +9,7 @@ public record TradeRequest(string Symbol, TradeSide Side, decimal Quantity);
 public class TradeRejectedException(string message) : Exception(message);
 
 /// <summary>Executes market orders against the paper account at the live Finnhub price.</summary>
-public partial class TradingService(FolioDb db, FinnhubClient finnhub, ILogger<TradingService> log)
+public partial class TradingService(FolioDb db, FinnhubClient finnhub, MarketClock clock, ILogger<TradingService> log)
 {
     // Serialises trades so two concurrent orders can't both spend the same cash.
     private static readonly SemaphoreSlim TradeLock = new(1, 1);
@@ -28,6 +28,9 @@ public partial class TradingService(FolioDb db, FinnhubClient finnhub, ILogger<T
     {
         var symbol = NormalizeSymbol(request.Symbol);
         var qty = ValidateQuantity(request.Quantity);
+        if (!clock.CanTrade())
+            throw new TradeRejectedException(
+                $"The market is closed. It opens {clock.DescribeNextOpen()}. You can place a limit order now; it's checked once the market opens.");
         var quote = await LiveQuoteAsync(symbol, ct);
         return await FillAsync(symbol, request.Side, qty, quote.Price, ct: ct);
     }

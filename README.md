@@ -21,7 +21,8 @@ The SQLite file `folio.db` is created on first run. The account starts with $100
 ## How it works
 
 - **Orders** are market orders filled at Finnhub's latest price (`/quote`). Fractional shares are allowed, up to 4 decimals.
-- **Limit and stop orders** stay open until filled or cancelled. A background job checks them against live prices every 60 seconds (`Folio:OrderCheckSeconds`). When the condition is met, the order fills at the market price seen at that check:
+- **Market hours:** trades only execute during the regular US session, 9:30 AM–4:00 PM ET on weekdays. Exchange holidays and 1:00 PM early closes (the day after Thanksgiving, Christmas Eve, July 3) are worked out from NYSE's published rules, so this needs no API calls; one-off closures announced at short notice aren't known. While the market is closed, market orders are refused and the top bar shows when it next opens. Limit and stop orders can still be placed; one that's already marketable waits for the open instead of filling on the last close. To trade around the clock at the last price, set `Folio:EnforceMarketHours` to `false`.
+- **Limit and stop orders** stay open until filled or cancelled. During market hours a background job checks them against live prices every 60 seconds (`Folio:OrderCheckSeconds`). When the condition is met, the order fills at the market price seen at that check:
   - Buy limit: fills when the price is at or below the limit.
   - Sell limit: fills when the price is at or above the limit.
   - Buy stop: fills when the price rises to the stop or higher.
@@ -41,6 +42,7 @@ The SQLite file `folio.db` is created on first run. The account starts with $100
 
 | Method | Path | Notes |
 | --- | --- | --- |
+| GET | `/api/market` | Whether the US market is open, when it closes or next opens, and the reason it's closed |
 | GET | `/api/portfolio` | Cash, holdings with live P&L, totals |
 | POST | `/api/trades` | `{ "symbol": "AAPL", "side": "Buy" \| "Sell", "quantity": 10 }` |
 | GET | `/api/trades?limit=100` | Trade history, newest first; `orderType` is `Market`, `Limit` or `Stop` |
@@ -67,7 +69,7 @@ Errors return `{ "error": "..." }`: 400 for rejected orders, 429 or 503 for Finn
 dotnet test Folio.slnx
 ```
 
-xUnit tests in `tests/Folio.Tests` cover trading (average cost, realized P&L, rounding, rejections), limit and stop orders (trigger rules, fills, commitments, cancels, stale prices), company profiles and logos, the watchlist, CSV export (quoting, formula escaping, locale), reset, valuation, snapshots and the benchmark maths. They use a fake Finnhub and an in-memory SQLite database with the real migrations, so they need neither an API key nor a network connection.
+xUnit tests in `tests/Folio.Tests` cover trading (average cost, realized P&L, rounding, rejections), market hours (NYSE holidays, early closes, daylight saving, closed-market trading), limit and stop orders (trigger rules, fills, commitments, cancels, stale prices), company profiles and logos, the watchlist, CSV export (quoting, formula escaping, locale), reset, valuation, snapshots and the benchmark maths. They use a fake Finnhub and an in-memory SQLite database with the real migrations, so they need neither an API key nor a network connection.
 
 ## Notes
 
