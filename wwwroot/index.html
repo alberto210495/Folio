@@ -137,7 +137,10 @@
     </div>
 
     <section class="card" aria-labelledby="hold-h">
-      <h2 id="hold-h">Holdings</h2>
+      <div class="card-head">
+        <h2 id="hold-h">Holdings</h2>
+        <a class="btn xs" href="/api/export/holdings.csv" download>Export CSV</a>
+      </div>
       <div class="table-scroll">
         <table class="data">
           <thead>
@@ -174,9 +177,12 @@
     <section class="card" aria-labelledby="orders-h">
       <div class="card-head">
         <h2 id="orders-h">Orders</h2>
-        <div class="tabs" role="tablist" aria-label="Order status">
-          <button role="tab" aria-selected="true" data-orders="open">Open <span id="open-count"></span></button>
-          <button role="tab" aria-selected="false" data-orders="closed">History</button>
+        <div class="head-actions">
+          <div class="tabs" role="tablist" aria-label="Order status">
+            <button role="tab" aria-selected="true" data-orders="open">Open <span id="open-count"></span></button>
+            <button role="tab" aria-selected="false" data-orders="closed">History</button>
+          </div>
+          <a class="btn xs" href="/api/export/orders.csv" download>Export CSV</a>
         </div>
       </div>
       <div class="table-scroll">
@@ -189,7 +195,10 @@
     </section>
 
     <section class="card" aria-labelledby="trades-h">
-      <h2 id="trades-h">Trade history</h2>
+      <div class="card-head">
+        <h2 id="trades-h">Trade history</h2>
+        <a class="btn xs" href="/api/export/trades.csv" download>Export CSV</a>
+      </div>
       <div class="table-scroll">
         <table class="data">
           <thead>

@@ -25,6 +25,7 @@ builder.Services.AddHostedService<SnapshotWorker>();
 builder.Services.AddScoped<OrderService>();
 builder.Services.AddHostedService<OrderWorker>();
 builder.Services.AddScoped<WatchlistService>();
+builder.Services.AddScoped<ExportService>();
 
 builder.Services.ConfigureHttpJsonOptions(o =>
     o.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
@@ -122,6 +123,14 @@ api.MapDelete("/watchlist/{symbol}", async (string symbol, WatchlistService w, C
     await w.RemoveAsync(symbol, ct)
         ? Results.NoContent()
         : Results.NotFound(new { error = $"{symbol.ToUpperInvariant()} isn't on your watchlist." }));
+
+// CSV downloads. The UTF-8 BOM makes Excel read the file as UTF-8.
+var csvFile = (CsvFile f) => Results.File(
+    [.. System.Text.Encoding.UTF8.GetPreamble(), .. System.Text.Encoding.UTF8.GetBytes(f.Content)],
+    "text/csv; charset=utf-8", f.FileName);
+api.MapGet("/export/trades.csv", async (ExportService e, CancellationToken ct) => csvFile(await e.TradesAsync(ct)));
+api.MapGet("/export/holdings.csv", async (ExportService e, CancellationToken ct) => csvFile(await e.HoldingsAsync(ct)));
+api.MapGet("/export/orders.csv", async (ExportService e, CancellationToken ct) => csvFile(await e.OrdersAsync(ct)));
 
 api.MapGet("/history", (string? range, SnapshotService s, CancellationToken ct) => s.GetHistoryAsync(range, ct));
 

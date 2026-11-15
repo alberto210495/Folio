@@ -29,6 +29,7 @@ The SQLite file `folio.db` is created on first run. The account starts with $100
 
   A limit that can already fill when you place it fills immediately. A stop that would trigger immediately is refused. New orders can't commit more cash or shares than you have once other open orders are counted, but nothing is reserved: market orders can spend it, in which case the resting order is rejected when it triggers. A price that crosses your trigger and comes back between two checks won't fill.
 - **Watchlist:** follow up to 25 symbols you don't hold, with live price and today's change. Add a ticker in the Watchlist card, or tap ☆ next to a quote in the order form. Tap a symbol or **Buy** to load it into the order form. Resetting the account keeps your watchlist.
+- **CSV export:** **Export CSV** on Holdings, Orders and Trade history downloads that table in full (every trade and order, not just what's on screen). Times are UTC in ISO 8601, numbers use `.` as the decimal point, and the holdings file ends with a `CASH` row. Text that a spreadsheet could run as a formula (starting with `=`, `+`, `-` or `@`) gets a leading `'`.
 - **Cost basis** is the weighted average. Selling books realized P&L = (fill − avg cost) × shares.
 - **Unrealized P&L** and **Today** use live quotes. Total return = (cash + holdings) − starting cash.
 - **Sector** comes from Finnhub's `/stock/profile2` and is cached in the `Companies` table on first buy. ETFs have no profile on the free tier, so they show as "Other".
@@ -49,6 +50,9 @@ The SQLite file `folio.db` is created on first run. The account starts with $100
 | GET | `/api/watchlist` | Watched symbols with live quotes and shares held |
 | POST | `/api/watchlist` | `{ "symbol": "NVDA" }` (adding twice is a no-op) |
 | DELETE | `/api/watchlist/{symbol}` | Remove a symbol |
+| GET | `/api/export/trades.csv` | Every trade, oldest first |
+| GET | `/api/export/holdings.csv` | Holdings at live prices, plus a `CASH` row |
+| GET | `/api/export/orders.csv` | Every order, any status |
 | GET | `/api/history?range=1M` | Value snapshots; range is `1D`, `1W`, `1M`, `3M`, `1Y` or `ALL` (max 400 points) |
 | GET | `/api/quote/{symbol}` | Cached live quote |
 | GET | `/api/search?q=apple` | US symbol search |
@@ -62,7 +66,7 @@ Errors return `{ "error": "..." }`: 400 for rejected orders, 429 or 503 for Finn
 dotnet test Folio.slnx
 ```
 
-xUnit tests in `tests/Folio.Tests` cover trading (average cost, realized P&L, rounding, rejections), limit and stop orders (trigger rules, fills, commitments, cancels, stale prices), the watchlist, reset, valuation, snapshots and the benchmark maths. They use a fake Finnhub and an in-memory SQLite database with the real migrations, so they need neither an API key nor a network connection.
+xUnit tests in `tests/Folio.Tests` cover trading (average cost, realized P&L, rounding, rejections), limit and stop orders (trigger rules, fills, commitments, cancels, stale prices), the watchlist, CSV export (quoting, formula escaping, locale), reset, valuation, snapshots and the benchmark maths. They use a fake Finnhub and an in-memory SQLite database with the real migrations, so they need neither an API key nor a network connection.
 
 ## Notes
 
