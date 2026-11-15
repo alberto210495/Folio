@@ -130,7 +130,20 @@ a.btn { text-decoration: none; display: inline-block; color: var(--ink); }
 .quote { display: flex; justify-content: space-between; align-items: baseline; padding: 10px 12px; margin: -4px 0 12px; border-radius: 8px; background: var(--surface-2); }
 .q-sym { font-weight: 600; }
 .q-price { font-variant-numeric: tabular-nums; font-weight: 600; }
-.q-right { display: flex; align-items: center; gap: 8px; }
+.q-right { display: flex; align-items: center; gap: 8px; flex: none; }
+.quote { align-items: center; gap: 10px; }
+.quote .co { max-width: 170px; }
+
+/* Company logos: on a white tile so dark logos stay visible in dark mode. */
+.sym-cell { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.sym-text { min-width: 0; }
+.co-logo {
+  flex: none; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px;
+  border-radius: 7px; overflow: hidden; background: #fff; box-shadow: inset 0 0 0 1px var(--border);
+}
+.co-logo img { width: 100%; height: 100%; object-fit: contain; padding: 1px; box-sizing: border-box; }
+.co-logo.mono { background: var(--surface-2); color: var(--ink-2); font-weight: 600; font-size: 13px; }
+#q-logo:empty { display: none; }
 .star { border: 0; background: none; cursor: pointer; font-size: 18px; line-height: 1; padding: 2px 4px; border-radius: 6px; color: var(--muted); }
 .star:hover { background: var(--surface); color: var(--ink); }
 .star[aria-pressed="true"] { color: var(--s2); }

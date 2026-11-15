@@ -96,8 +96,12 @@ public class FinnhubClient(HttpClient http, IMemoryCache cache, IOptions<Finnhub
         var raw = await GetAsync<ProfileDto>($"stock/profile2?symbol={Uri.EscapeDataString(symbol)}", ct);
         // ETFs and unknown tickers come back as {} on the free tier.
         if (raw is null || string.IsNullOrEmpty(raw.Name)) return null;
-        return new CompanyProfile(symbol, raw.Name, NullIfEmpty(raw.Industry), NullIfEmpty(raw.Logo));
+        return new CompanyProfile(symbol, raw.Name, NullIfEmpty(raw.Industry), SafeLogo(raw.Logo));
     }
+
+    /// <summary>The page puts this straight into an img src, so only absolute https URLs are kept.</summary>
+    public static string? SafeLogo(string? url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var u) && u.Scheme == Uri.UriSchemeHttps ? u.AbsoluteUri : null;
 
     private async Task<T?> GetAsync<T>(string path, CancellationToken ct)
     {

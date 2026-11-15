@@ -17,7 +17,16 @@ public sealed class FakeFinnhub : HttpMessageHandler
 {
     public Dictionary<string, decimal> Prices { get; } = new(StringComparer.OrdinalIgnoreCase);
     public HashSet<string> Failing { get; } = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Logo URL returned by /stock/profile2; empty when not set.</summary>
+    public Dictionary<string, string> Logos { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public int ProfileCalls { get; private set; }
     public HttpStatusCode FailureStatus { get; set; } = HttpStatusCode.TooManyRequests;
+
+    private object Profile(string symbol)
+    {
+        ProfileCalls++;
+        return new { name = $"{symbol} Inc", finnhubIndustry = "Technology", logo = Logos.GetValueOrDefault(symbol, "") };
+    }
 
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
@@ -32,7 +41,7 @@ public sealed class FakeFinnhub : HttpMessageHandler
             _ when path.EndsWith("/quote") => Prices.TryGetValue(symbol, out var p)
                 ? new { c = p, d = 1m, dp = 0.5m, pc = p - 1m, t = DateTimeOffset.UtcNow.ToUnixTimeSeconds() }
                 : new { c = 0m, d = (decimal?)null, dp = (decimal?)null, pc = 0m, t = 0L },
-            _ when path.EndsWith("/stock/profile2") => new { name = $"{symbol} Inc", finnhubIndustry = "Technology", logo = "" },
+            _ when path.EndsWith("/stock/profile2") => Profile(symbol),
             _ => new { result = Array.Empty<object>() },
         };
 

@@ -32,7 +32,7 @@ The SQLite file `folio.db` is created on first run. The account starts with $100
 - **CSV export:** **Export CSV** on Holdings, Orders and Trade history downloads that table in full (every trade and order, not just what's on screen). Times are UTC in ISO 8601, numbers use `.` as the decimal point, and the holdings file ends with a `CASH` row. Text that a spreadsheet could run as a formula (starting with `=`, `+`, `-` or `@`) gets a leading `'`.
 - **Cost basis** is the weighted average. Selling books realized P&L = (fill − avg cost) × shares.
 - **Unrealized P&L** and **Today** use live quotes. Total return = (cash + holdings) − starting cash.
-- **Sector** comes from Finnhub's `/stock/profile2` and is cached in the `Companies` table on first buy. ETFs have no profile on the free tier, so they show as "Other".
+- **Sector, name and logo** come from Finnhub's `/stock/profile2`. They're fetched once per symbol (on first buy, watch or lookup) and cached in the `Companies` table. ETFs have no profile on the free tier, so they show as "Other" with a letter tile instead of a logo. Logo images load straight from Finnhub's image host, without a referrer; only `https` URLs are used.
 - **Value over time:** a background job saves the account value at startup and every 15 minutes while the app runs, and again after each trade. A snapshot is skipped if any price is stale, or if the value hasn't changed since the last one (for example, when markets are closed). The chart always ends at the current live value. History only covers periods when Folio was running.
 - **S&P 500 comparison:** each snapshot also stores SPY's price. The orange line shows what your starting cash would be worth if it had all gone into SPY when the account started. You can change the ticker with `Folio:BenchmarkSymbol` in `appsettings.json`. Free Finnhub has no historical prices, so the comparison begins when the first snapshot is saved.
 - **Rate limits:** the free tier allows 60 calls/min. Quotes are cached for 15s (`Finnhub:QuoteCacheSeconds`) and the UI refreshes every 60s while the tab is visible. Each refresh costs about one call per holding and watched symbol, plus SPY, which is why the watchlist is capped at 25. If Finnhub fails, holdings show the last known price marked *stale*, and trading pauses until live prices return.
@@ -56,6 +56,7 @@ The SQLite file `folio.db` is created on first run. The account starts with $100
 | GET | `/api/history?range=1M` | Value snapshots; range is `1D`, `1W`, `1M`, `3M`, `1Y` or `ALL` (max 400 points) |
 | GET | `/api/quote/{symbol}` | Cached live quote |
 | GET | `/api/search?q=apple` | US symbol search |
+| GET | `/api/company/{symbol}` | Name, industry and logo URL (cached after the first lookup) |
 | POST | `/api/portfolio/reset` | `{ "startingCash": 100000 }` (wipes positions, trades and orders; keeps the watchlist) |
 
 Errors return `{ "error": "..." }`: 400 for rejected orders, 429 or 503 for Finnhub problems.
@@ -66,7 +67,7 @@ Errors return `{ "error": "..." }`: 400 for rejected orders, 429 or 503 for Finn
 dotnet test Folio.slnx
 ```
 
-xUnit tests in `tests/Folio.Tests` cover trading (average cost, realized P&L, rounding, rejections), limit and stop orders (trigger rules, fills, commitments, cancels, stale prices), the watchlist, CSV export (quoting, formula escaping, locale), reset, valuation, snapshots and the benchmark maths. They use a fake Finnhub and an in-memory SQLite database with the real migrations, so they need neither an API key nor a network connection.
+xUnit tests in `tests/Folio.Tests` cover trading (average cost, realized P&L, rounding, rejections), limit and stop orders (trigger rules, fills, commitments, cancels, stale prices), company profiles and logos, the watchlist, CSV export (quoting, formula escaping, locale), reset, valuation, snapshots and the benchmark maths. They use a fake Finnhub and an in-memory SQLite database with the real migrations, so they need neither an API key nor a network connection.
 
 ## Notes
 
