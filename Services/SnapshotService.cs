@@ -11,6 +11,12 @@ public class FolioOptions
 
     /// <summary>How often open limit/stop orders are checked against live prices (min 15).</summary>
     public int OrderCheckSeconds { get; set; } = 60;
+
+    /// <summary>
+    /// When true (default), market orders and order fills only happen during regular US market hours.
+    /// Turn off to trade around the clock on the last known price.
+    /// </summary>
+    public bool EnforceMarketHours { get; set; } = true;
 }
 
 /// <param name="T">Time (UTC).</param>

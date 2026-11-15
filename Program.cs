@@ -18,6 +18,8 @@ builder.Services.AddHttpClient<FinnhubClient>((sp, http) =>
     http.BaseAddress = new Uri(opt.BaseUrl);
     http.Timeout = TimeSpan.FromSeconds(10);
 });
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<MarketClock>();
 builder.Services.AddScoped<TradingService>();
 builder.Services.AddScoped<PortfolioService>();
 builder.Services.AddScoped<SnapshotService>();
@@ -64,6 +66,8 @@ app.UseStaticFiles();
 var api = app.MapGroup("/api");
 
 api.MapGet("/status", (FinnhubClient f) => new { finnhubConfigured = f.IsConfigured });
+
+api.MapGet("/market", (MarketClock m) => m.Status());
 
 api.MapGet("/portfolio", (PortfolioService p, CancellationToken ct) => p.GetAsync(ct));
 

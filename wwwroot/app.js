@@ -9,7 +9,7 @@ const pct = new Intl.NumberFormat("en-US", { style: "percent", minimumFractionDi
 const shares = new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 });
 const timeFmt = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
 
-const state = { portfolio: null, quote: null, allocMode: "holding", configured: true, history: null, range: "1M", histClear: null, allocClear: null, orders: null, knownOpenOrders: null, watchlist: [] };
+const state = { portfolio: null, quote: null, allocMode: "holding", configured: true, history: null, range: "1M", histClear: null, allocClear: null, orders: null, knownOpenOrders: null, watchlist: [], market: null };
 
 // ---------- helpers ----------
 function esc(s) {
@@ -65,19 +65,23 @@ function banner(html) {
 // ---------- loading ----------
 async function load() {
   try {
-    const [portfolio, trades, history, openOrders, closedOrders, watchlist] = await Promise.all([
+    const [portfolio, trades, history, openOrders, closedOrders, watchlist, market] = await Promise.all([
       api("/api/portfolio"),
       api("/api/trades?limit=200"),
       api(`/api/history?range=${state.range}`).catch(() => null),
       api("/api/orders?status=open"),
       api("/api/orders?status=closed&limit=100"),
       api("/api/watchlist").catch(() => state.watchlist),
+      api("/api/market").catch(() => state.market),
     ]);
     notifyClosedOrders(openOrders, closedOrders);
     state.portfolio = portfolio;
     state.history = history;
     state.orders = { open: openOrders, closed: closedOrders };
     state.watchlist = watchlist;
+    state.market = market;
+    renderMarket();
+    updateTicket();
     renderHistory();
     renderKpis(portfolio);
     renderAllocation();
@@ -96,6 +100,38 @@ async function load() {
     }
   } catch (e) {
     banner(esc(e.message));
+  }
+}
+
+// ---------- Market hours ----------
+const ET = "America/New_York";
+const etDay = (d) => new Intl.DateTimeFormat("en-US", { timeZone: ET, dateStyle: "short" }).format(d);
+
+/** "4:00 PM ET" today, "Mon 9:30 AM ET" on another day. Market times are always shown in New York time. */
+function etTime(iso) {
+  const d = new Date(iso);
+  const sameDay = etDay(d) === etDay(new Date());
+  return new Intl.DateTimeFormat("en-US", { timeZone: ET, hour: "numeric", minute: "2-digit", ...(sameDay ? {} : { weekday: "short" }) })
+    .format(d) + " ET";
+}
+
+const marketClosed = () => state.market && !state.market.isOpen && state.market.enforced;
+
+function renderMarket() {
+  const m = state.market;
+  const el = $("#market");
+  el.hidden = !m;
+  if (!m) return;
+  el.classList.toggle("open", m.isOpen);
+  if (m.isOpen) {
+    el.innerHTML = `<span class="dot"></span>Market open<span class="muted"> · closes ${m.earlyClose ? "early at " : ""}${etTime(m.closesAt)}</span>`;
+    el.title = "US stock market regular session";
+  } else {
+    const why = m.closedReason && !["Weekend", "Overnight"].includes(m.closedReason) ? ` (${m.closedReason})` : "";
+    el.innerHTML = `<span class="dot"></span>Market closed${esc(why)}<span class="muted"> · opens ${etTime(m.nextOpen)}</span>`;
+    el.title = m.enforced
+      ? "Market orders are paused until the open. Limit and stop orders can be placed and are checked once it opens."
+      : "Market hours aren't enforced (Folio:EnforceMarketHours is off), so trades fill at the last price.";
   }
 }
 
@@ -719,9 +755,14 @@ function updateTicket() {
   $("#price-field").hidden = !resting;
   $("#price-label").textContent = `${type} price`;
   const hint = $("#order-hint");
-  hint.hidden = !resting;
-  hint.textContent = resting ? HINTS[`${s}|${type}`](limitPrice > 0 ? usd.format(limitPrice) : "your price") +
-    " Fills at the market price when triggered." : "";
+  const closed = marketClosed();
+  const opens = closed ? etTime(state.market.nextOpen) : "";
+  hint.hidden = !resting && !closed;
+  hint.classList.toggle("warn", closed && !resting);
+  hint.textContent = resting
+    ? HINTS[`${s}|${type}`](limitPrice > 0 ? usd.format(limitPrice) : "your price") + " Fills at the market price when triggered." +
+      (closed ? ` The market is closed, so it's checked from ${opens}.` : "")
+    : closed ? `The market is closed until ${opens}. Market orders open then; you can place a limit or stop order now.` : "";
 
   const q = state.quote;
   const qty = parseFloat($("#qty").value);
@@ -732,7 +773,7 @@ function updateTicket() {
   $("#held").textContent = q
     ? s === "Sell" ? `You hold ${shares.format(held)}` : `Cash ${usd.format(state.portfolio?.cash ?? 0)}`
     : "";
-  submit.disabled = !state.configured;
+  submit.disabled = !state.configured || (closed && !resting);
 }
 
 $("#qty").addEventListener("input", updateTicket);
