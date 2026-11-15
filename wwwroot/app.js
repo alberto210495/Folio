@@ -9,7 +9,7 @@ const pct = new Intl.NumberFormat("en-US", { style: "percent", minimumFractionDi
 const shares = new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 });
 const timeFmt = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
 
-const state = { portfolio: null, quote: null, allocMode: "holding", configured: true, history: null, range: "1M", histClear: null, allocClear: null, orders: null, knownOpenOrders: null, watchlist: [], market: null, tradePage: 1, tradePageSize: 25, streaming: false, live: { open: false, upstream: false } };
+const state = { portfolio: null, quote: null, allocMode: "holding", configured: true, history: null, range: "1M", histClear: null, allocClear: null, orders: null, knownOpenOrders: null, watchlist: [], market: null, tradePage: 1, tradePageSize: 25, streaming: false, live: { open: false, upstream: false }, portfolios: [], portfolioId: null };
 
 // ---------- helpers ----------
 function esc(s) {
@@ -46,6 +46,9 @@ document.addEventListener("error", (ev) => {
 }, true);
 
 async function api(path, opts = {}) {
+  if (state.portfolioId && path.startsWith("/api/") && !path.startsWith("/api/portfolios")) {
+    path += (path.includes("?") ? "&" : "?") + `portfolio=${state.portfolioId}`;
+  }
   const res = await fetch(path, {
     ...opts,
     headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
@@ -62,10 +65,151 @@ function banner(html) {
   el.innerHTML = html || "";
 }
 
-// ---------- loading ----------
-async function load() {
+// ---------- Portfolios ----------
+const PORTFOLIO_KEY = "folio.portfolio";
+try { state.portfolioId = Number(localStorage.getItem(PORTFOLIO_KEY)) || null; } catch { /* storage unavailable */ }
+
+const currentPortfolio = () => state.portfolios.find((p) => p.id === state.portfolioId);
+
+async function loadPortfolios() {
+  state.portfolios = await api("/api/portfolios");
+  // Fall back to the first portfolio if the remembered one was deleted (or nothing is remembered yet).
+  if (!currentPortfolio()) setPortfolioId(state.portfolios[0]?.id ?? null);
+  renderPortfolios();
+}
+
+function setPortfolioId(id) {
+  state.portfolioId = id;
+  try { localStorage.setItem(PORTFOLIO_KEY, String(id)); } catch { /* ignore */ }
+  // CSV links are plain downloads, so they carry the portfolio in their URL.
+  for (const a of document.querySelectorAll("a[data-export]"))
+    a.href = `/api/export/${a.dataset.export}.csv?portfolio=${id}`;
+}
+
+function renderPortfolios() {
+  const tabs = $("#pf-tabs");
+  tabs.innerHTML = state.portfolios.map((p) => {
+    // The open portfolio shows its live value; the others use the last refresh.
+    const live = p.id === state.portfolioId && state.portfolio ? state.portfolio : null;
+    const value = live ? live.totalValue : p.totalValue;
+    const retPct = live ? live.totalReturnPercent : p.totalReturnPercent;
+    return `
+      <button type="button" role="tab" class="pf-tab" data-pf="${p.id}" aria-selected="${p.id === state.portfolioId}">
+        <span class="pf-name">${esc(p.name)}</span>
+        <span class="pf-val">${usd.format(value)} <span class="${tone(retPct)}">${signed(retPct / 100, pct)}</span></span>
+      </button>`;
+  }).join("");
+  const cur = currentPortfolio();
+  $("#reset-name").textContent = cur ? `“${cur.name}”` : "this portfolio";
+  document.title = cur && state.portfolios.length > 1 ? `${cur.name} · Folio` : "Folio";
+}
+
+/** Updates just the open tab's value as live prices arrive. */
+function paintPortfolioTab() {
+  const p = state.portfolio;
+  const val = document.querySelector(`.pf-tab[data-pf="${state.portfolioId}"] .pf-val`);
+  if (p && val) val.innerHTML = `${usd.format(p.totalValue)} <span class="${tone(p.totalReturnPercent)}">${signed(p.totalReturnPercent / 100, pct)}</span>`;
+}
+
+async function switchPortfolio(id) {
+  if (id === state.portfolioId) return;
+  setPortfolioId(id);
+  // Per-portfolio view state starts fresh; the order form keeps its symbol.
+  state.tradePage = 1;
+  state.knownOpenOrders = null; // don't announce the other portfolio's orders as fills
+  $("#trade-msg").textContent = "";
+  renderPortfolios();
+  await load();
+}
+
+$("#pf-tabs").addEventListener("click", (ev) => {
+  const tab = ev.target.closest("[data-pf]");
+  if (tab) switchPortfolio(Number(tab.dataset.pf));
+});
+
+// Arrow keys move between tabs.
+$("#pf-tabs").addEventListener("keydown", (ev) => {
+  if (ev.key !== "ArrowRight" && ev.key !== "ArrowLeft") return;
+  const tabs = [...document.querySelectorAll(".pf-tab")];
+  const i = tabs.indexOf(document.activeElement);
+  if (i < 0) return;
+  const next = tabs[(i + (ev.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
+  next.focus();
+  switchPortfolio(Number(next.dataset.pf));
+});
+
+// New portfolio
+const newDlg = $("#pf-new-dlg");
+$("#pf-new").addEventListener("click", () => {
+  $("#pf-new-name").value = "";
+  $("#pf-new-cash").value = 100000;
+  $("#pf-new-msg").textContent = "";
+  newDlg.showModal();
+  $("#pf-new-name").focus();
+});
+newDlg.querySelector("form").addEventListener("submit", async (ev) => {
+  if (ev.submitter?.value !== "ok") return;
+  ev.preventDefault(); // stay open until the server accepts it
   try {
-    const [portfolio, trades, history, openOrders, closedOrders, watchlist, market] = await Promise.all([
+    const created = await api("/api/portfolios", {
+      method: "POST",
+      body: JSON.stringify({ name: $("#pf-new-name").value, startingCash: parseFloat($("#pf-new-cash").value) }),
+    });
+    newDlg.close();
+    await loadPortfolios();
+    await switchPortfolio(created.id);
+    toast(`Created “${created.name}” with ${usd.format(created.startingCash)}.`);
+  } catch (e) {
+    $("#pf-new-msg").textContent = e.message;
+  }
+});
+
+// Rename or delete
+const manageDlg = $("#pf-manage-dlg");
+$("#pf-manage").addEventListener("click", () => {
+  const cur = currentPortfolio();
+  if (!cur) return;
+  $("#pf-rename").value = cur.name;
+  $("#pf-manage-msg").textContent = "";
+  const only = state.portfolios.length <= 1;
+  $("#pf-delete").disabled = only;
+  $("#pf-delete").title = only ? "You can't delete your only portfolio. Use Reset portfolio instead." : "";
+  manageDlg.showModal();
+  $("#pf-rename").select();
+});
+manageDlg.querySelector("form").addEventListener("submit", async (ev) => {
+  const action = ev.submitter?.value;
+  if (action !== "rename" && action !== "delete") return;
+  ev.preventDefault();
+  const cur = currentPortfolio();
+  try {
+    if (action === "rename") {
+      await api(`/api/portfolios/${cur.id}`, { method: "PATCH", body: JSON.stringify({ name: $("#pf-rename").value }) });
+      manageDlg.close();
+      await loadPortfolios();
+    } else {
+      if (!confirm(`Delete “${cur.name}” with all its positions, trades, orders and history? This can't be undone.`)) return;
+      await api(`/api/portfolios/${cur.id}`, { method: "DELETE" });
+      manageDlg.close();
+      state.portfolioId = null;
+      await loadPortfolios(); // falls back to the first portfolio
+      state.tradePage = 1;
+      state.knownOpenOrders = null;
+      await load();
+      toast(`Deleted “${cur.name}”.`);
+    }
+  } catch (e) {
+    $("#pf-manage-msg").textContent = e.message;
+  }
+});
+
+// ---------- Loading ----------
+let loadSeq = 0;
+
+async function load() {
+  const seq = ++loadSeq;
+  try {
+    const [portfolio, trades, history, openOrders, closedOrders, watchlist, market, portfolios] = await Promise.all([
       api("/api/portfolio"),
       api(tradesUrl()),
       api(`/api/history?range=${state.range}`).catch(() => null),
@@ -73,13 +217,17 @@ async function load() {
       api("/api/orders?status=closed&limit=100"),
       api("/api/watchlist").catch(() => state.watchlist),
       api("/api/market").catch(() => state.market),
+      api("/api/portfolios").catch(() => state.portfolios),
     ]);
+    if (seq !== loadSeq) return; // you switched portfolios while this was loading
     notifyClosedOrders(openOrders, closedOrders);
     state.portfolio = portfolio;
     state.history = history;
     state.orders = { open: openOrders, closed: closedOrders };
     state.watchlist = watchlist;
     state.market = market;
+    state.portfolios = portfolios;
+    renderPortfolios();
     renderMarket();
     updateTicket();
     renderHistory();
@@ -99,6 +247,13 @@ async function load() {
       banner("");
     }
   } catch (e) {
+    if (seq !== loadSeq) return;
+    // The open portfolio was deleted elsewhere (another tab): fall back to the first one.
+    if (/portfolio doesn't exist/.test(e.message)) {
+      state.portfolioId = null;
+      await loadPortfolios();
+      return load();
+    }
     banner(esc(e.message));
   }
 }
@@ -214,6 +369,7 @@ function applyPrices(prices) {
     p.unrealizedPnl = round2(p.holdings.reduce((s, h) => s + h.unrealizedPnl, 0));
     p.dayChange = round2(p.holdings.reduce((s, h) => s + h.dayChange, 0));
     renderKpis(p);
+    paintPortfolioTab();
     // Weights shift for every row when any price moves, so patch them all.
     for (const row of document.querySelectorAll("#holdings tr[data-sym]")) {
       const h = p.holdings.find((x) => x.symbol === row.dataset.sym);
@@ -1174,6 +1330,7 @@ $("#refresh").addEventListener("click", load);
     state.streaming = status.streaming;
   } catch { /* load() will surface errors */ }
   updateTicket();
+  try { await loadPortfolios(); } catch (e) { banner(esc(e.message)); }
   await load();
   connectStream();
   setInterval(() => { if (!document.hidden) load(); }, REFRESH_MS);

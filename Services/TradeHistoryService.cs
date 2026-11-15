@@ -20,7 +20,7 @@ public record TradeView(
 public record TradePage(IReadOnlyList<TradeView> Items, int Total, int Page, int PageSize, int Pages);
 
 /// <summary>Trade history, newest first, one page at a time.</summary>
-public class TradeHistoryService(FolioDb db)
+public class TradeHistoryService(FolioDb db, PortfolioContext portfolio)
 {
     public const int DefaultPageSize = 25;
     public const int MaxPageSize = 200;
@@ -28,12 +28,13 @@ public class TradeHistoryService(FolioDb db)
     public async Task<TradePage> PageAsync(int? page, int? pageSize, CancellationToken ct = default)
     {
         var size = Math.Clamp(pageSize ?? DefaultPageSize, 1, MaxPageSize);
-        var total = await db.Trades.CountAsync(ct);
+        var mine = db.Trades.AsNoTracking().Where(t => t.AccountId == portfolio.Id);
+        var total = await mine.CountAsync(ct);
         var pages = Math.Max(1, (total + size - 1) / size);
         // A page that no longer exists (e.g. after a reset) shows the last one instead of an empty table.
         var current = Math.Clamp(page ?? 1, 1, pages);
 
-        var trades = await db.Trades.AsNoTracking()
+        var trades = await mine
             .OrderByDescending(t => t.ExecutedAt).ThenByDescending(t => t.Id) // Id breaks ties so pages never overlap
             .Skip((current - 1) * size)
             .Take(size)

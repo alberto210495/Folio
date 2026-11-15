@@ -56,12 +56,12 @@ public sealed class Csv
 
 public record CsvFile(string FileName, string Content);
 
-public class ExportService(FolioDb db, PortfolioService portfolio)
+public class ExportService(FolioDb db, PortfolioService portfolio, PortfolioContext current)
 {
     public async Task<CsvFile> TradesAsync(CancellationToken ct = default)
     {
-        var trades = await db.Trades.AsNoTracking().OrderBy(t => t.ExecutedAt).ThenBy(t => t.Id).ToListAsync(ct);
-        var types = await db.Orders.AsNoTracking().ToDictionaryAsync(o => o.Id, o => o.Type, ct);
+        var trades = await db.Trades.AsNoTracking().Where(t => t.AccountId == current.Id).OrderBy(t => t.ExecutedAt).ThenBy(t => t.Id).ToListAsync(ct);
+        var types = await db.Orders.AsNoTracking().Where(o => o.AccountId == current.Id).ToDictionaryAsync(o => o.Id, o => o.Type, ct);
 
         var csv = new Csv("executed_at_utc", "side", "order_type", "symbol", "quantity", "price", "total", "realized_pnl", "order_id");
         foreach (var t in trades)
@@ -70,7 +70,7 @@ public class ExportService(FolioDb db, PortfolioService portfolio)
             csv.Row(t.ExecutedAt, t.Side, type, t.Symbol, t.Quantity, t.Price,
                 decimal.Round(t.Quantity * t.Price, 2, MidpointRounding.ToEven), t.RealizedPnl, t.OrderId);
         }
-        return new(Name("trades"), csv.ToString());
+        return new(await NameAsync("trades", ct), csv.ToString());
     }
 
     /// <summary>Holdings at live prices, as on the dashboard. Cash is its own row with symbol CASH.</summary>
@@ -85,21 +85,38 @@ public class ExportService(FolioDb db, PortfolioService portfolio)
                 h.UnrealizedPnl, h.UnrealizedPnlPercent, h.DayChange, Weight(h.MarketValue, p.TotalValue), h.PriceStale);
         }
         csv.Row("CASH", "Cash", null, null, null, null, null, p.Cash, null, null, null, Weight(p.Cash, p.TotalValue), false);
-        return new(Name("holdings"), csv.ToString());
+        return new(await NameAsync("holdings", ct), csv.ToString());
     }
 
     public async Task<CsvFile> OrdersAsync(CancellationToken ct = default)
     {
-        var orders = await db.Orders.AsNoTracking().OrderBy(o => o.CreatedAt).ThenBy(o => o.Id).ToListAsync(ct);
+        var orders = await db.Orders.AsNoTracking().Where(o => o.AccountId == current.Id).OrderBy(o => o.CreatedAt).ThenBy(o => o.Id).ToListAsync(ct);
         var csv = new Csv("id", "created_at_utc", "closed_at_utc", "side", "type", "symbol", "quantity", "price",
             "status", "fill_price", "reason");
         foreach (var o in orders)
             csv.Row(o.Id, o.CreatedAt, o.ClosedAt, o.Side, o.Type, o.Symbol, o.Quantity, o.Price, o.Status, o.FillPrice, o.Reason);
-        return new(Name("orders"), csv.ToString());
+        return new(await NameAsync("orders", ct), csv.ToString());
     }
 
     private static decimal Weight(decimal value, decimal total) =>
         total == 0 ? 0 : decimal.Round(value / total * 100, 2, MidpointRounding.ToEven);
 
-    private static string Name(string what) => $"folio-{what}-{DateTime.UtcNow:yyyy-MM-dd}.csv";
+    /// <summary>folio-growth-trades-2026-11-15.csv: the portfolio's name, reduced to letters, digits and dashes.</summary>
+    private async Task<string> NameAsync(string what, CancellationToken ct)
+    {
+        var name = await db.Accounts.Where(a => a.Id == current.Id).Select(a => a.Name).FirstOrDefaultAsync(ct) ?? "";
+        var slug = Slug(name);
+        return $"folio-{(slug.Length > 0 ? slug + "-" : "")}{what}-{DateTime.UtcNow:yyyy-MM-dd}.csv";
+    }
+
+    public static string Slug(string name)
+    {
+        var sb = new StringBuilder();
+        foreach (var c in name.ToLowerInvariant())
+        {
+            if (c is >= 'a' and <= 'z' or >= '0' and <= '9') sb.Append(c);
+            else if (sb.Length > 0 && sb[^1] != '-') sb.Append('-');
+        }
+        return sb.ToString().Trim('-');
+    }
 }

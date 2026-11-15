@@ -19,11 +19,19 @@
       <span id="live" class="live small" hidden aria-live="polite"></span>
       <span id="updated" class="muted small" aria-live="polite"></span>
       <button id="refresh" class="btn ghost" type="button" title="Refresh quotes">Refresh</button>
-      <button id="reset" class="btn ghost" type="button">Reset account</button>
+      <button id="reset" class="btn ghost" type="button">Reset portfolio</button>
     </div>
   </header>
 
   <main class="wrap">
+    <nav class="pf-strip" aria-label="Portfolios">
+      <div id="pf-tabs" class="pf-tabs" role="tablist" aria-label="Portfolios"></div>
+      <div class="pf-actions">
+        <button id="pf-new" class="btn xs" type="button">+ New</button>
+        <button id="pf-manage" class="btn xs ghost" type="button">Rename or delete</button>
+      </div>
+    </nav>
+
     <div id="banner" class="banner" hidden></div>
 
     <section class="kpis" aria-label="Account summary">
@@ -147,7 +155,7 @@
     <section class="card" aria-labelledby="hold-h">
       <div class="card-head">
         <h2 id="hold-h">Holdings</h2>
-        <a class="btn xs" href="/api/export/holdings.csv" download>Export CSV</a>
+        <a class="btn xs" href="/api/export/holdings.csv" data-export="holdings" download>Export CSV</a>
       </div>
       <div class="table-scroll">
         <table class="data">
@@ -190,7 +198,7 @@
             <button role="tab" aria-selected="true" data-orders="open">Open <span id="open-count"></span></button>
             <button role="tab" aria-selected="false" data-orders="closed">History</button>
           </div>
-          <a class="btn xs" href="/api/export/orders.csv" download>Export CSV</a>
+          <a class="btn xs" href="/api/export/orders.csv" data-export="orders" download>Export CSV</a>
         </div>
       </div>
       <div class="table-scroll">
@@ -205,7 +213,7 @@
     <section class="card" aria-labelledby="trades-h">
       <div class="card-head">
         <h2 id="trades-h">Trade history</h2>
-        <a class="btn xs" href="/api/export/trades.csv" download>Export CSV</a>
+        <a class="btn xs" href="/api/export/trades.csv" data-export="trades" download>Export CSV</a>
       </div>
       <div class="table-scroll">
         <table class="data">
@@ -237,12 +245,41 @@
 
   <dialog id="reset-dlg">
     <form method="dialog" class="dlg">
-      <h2>Reset account</h2>
-      <p class="muted">Deletes all positions and trade history. This can't be undone.</p>
+      <h2>Reset portfolio</h2>
+      <p class="muted">Deletes all positions, trades, orders and history in <span id="reset-name">this portfolio</span>. Your other portfolios aren't affected. This can't be undone.</p>
       <label class="field"><span>Starting cash</span><input id="reset-cash" type="number" min="1" step="any" value="100000"></label>
       <div class="dlg-actions">
         <button value="cancel" class="btn ghost" formnovalidate>Cancel</button>
         <button value="ok" class="btn danger">Reset</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="pf-new-dlg">
+    <form method="dialog" class="dlg">
+      <h2>New portfolio</h2>
+      <p class="muted">A separate account with its own cash, holdings, orders and history. Your watchlist is shared.</p>
+      <label class="field"><span>Name</span><input id="pf-new-name" maxlength="40" placeholder="e.g. Growth, Dividends, Experiment" autocomplete="off"></label>
+      <label class="field"><span>Starting cash</span><input id="pf-new-cash" type="number" min="1" step="any" value="100000"></label>
+      <p id="pf-new-msg" class="small msg down" role="alert"></p>
+      <div class="dlg-actions">
+        <button value="cancel" class="btn ghost" formnovalidate>Cancel</button>
+        <button value="ok" class="btn primary">Create</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="pf-manage-dlg">
+    <form method="dialog" class="dlg">
+      <h2>Rename or delete</h2>
+      <label class="field"><span>Name</span><input id="pf-rename" maxlength="40" autocomplete="off"></label>
+      <p id="pf-manage-msg" class="small msg down" role="alert"></p>
+      <div class="dlg-actions spread">
+        <button id="pf-delete" value="delete" class="btn danger" formnovalidate>Delete portfolio</button>
+        <span>
+          <button value="cancel" class="btn ghost" formnovalidate>Cancel</button>
+          <button value="rename" class="btn primary">Save name</button>
+        </span>
       </div>
     </form>
   </dialog>

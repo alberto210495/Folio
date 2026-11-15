@@ -27,7 +27,7 @@ public record HistoryPoint(DateTime T, decimal V, decimal? B);
 public record HistoryView(decimal StartingCash, string BenchmarkSymbol, decimal? BenchmarkNow, IReadOnlyList<HistoryPoint> Points);
 
 /// <summary>Records and serves account-value snapshots for the value-over-time chart.</summary>
-public class SnapshotService(FolioDb db, PortfolioService portfolio, FinnhubClient finnhub, IOptions<FolioOptions> options)
+public class SnapshotService(FolioDb db, PortfolioService portfolio, FinnhubClient finnhub, PortfolioContext current, IOptions<FolioOptions> options)
 {
     private const int MaxPoints = 400;
     private readonly string _benchmark = options.Value.BenchmarkSymbol;
@@ -36,17 +36,28 @@ public class SnapshotService(FolioDb db, PortfolioService portfolio, FinnhubClie
     /// Takes a snapshot at current prices. Skipped when any holding's price is stale (it would distort
     /// the line), and when nothing changed since the last one (markets closed), unless a day has passed.
     /// </summary>
-    public async Task<bool> RecordAsync(CancellationToken ct = default)
+    public Task<bool> RecordAsync(CancellationToken ct = default) => RecordAsync(current.Id, ct);
+
+    /// <summary>Snapshots every portfolio. Returns how many got a new point.</summary>
+    public async Task<int> RecordAllAsync(CancellationToken ct = default)
     {
-        var view = await portfolio.GetAsync(ct);
+        var recorded = 0;
+        foreach (var id in await db.Accounts.AsNoTracking().Select(a => a.Id).ToListAsync(ct))
+            if (await RecordAsync(id, ct)) recorded++;
+        return recorded;
+    }
+
+    public async Task<bool> RecordAsync(int accountId, CancellationToken ct = default)
+    {
+        var view = await portfolio.GetAsync(accountId, ct);
         if (view.AnyStale) return false;
 
         var bench = await BenchmarkPriceAsync(ct);
-        var account = await db.GetAccountAsync(ct);
+        var account = await db.GetAccountAsync(accountId, ct);
         // First good benchmark price after account start (or reset) becomes the baseline.
         if (bench is not null && account.BenchmarkStartPrice is null) account.BenchmarkStartPrice = bench;
 
-        var last = await db.Snapshots.AsNoTracking().OrderByDescending(s => s.TakenAt).FirstOrDefaultAsync(ct);
+        var last = await db.Snapshots.AsNoTracking().Where(s => s.AccountId == accountId).OrderByDescending(s => s.TakenAt).FirstOrDefaultAsync(ct);
         var unchanged = last is not null
             && last.TotalValue == view.TotalValue
             && last.BenchmarkPrice == bench
@@ -56,6 +67,7 @@ public class SnapshotService(FolioDb db, PortfolioService portfolio, FinnhubClie
         {
             db.Snapshots.Add(new PortfolioSnapshot
             {
+                AccountId = accountId,
                 TotalValue = view.TotalValue,
                 Cash = view.Cash,
                 HoldingsValue = view.HoldingsValue,
@@ -80,10 +92,10 @@ public class SnapshotService(FolioDb db, PortfolioService portfolio, FinnhubClie
     public async Task<HistoryView> GetHistoryAsync(string? range, CancellationToken ct = default)
     {
         var since = RangeStart(range);
-        var account = await db.GetAccountAsync(ct);
+        var account = await db.GetAccountAsync(current.Id, ct);
         var basePrice = account.BenchmarkStartPrice;
 
-        var query = db.Snapshots.AsNoTracking();
+        var query = db.Snapshots.AsNoTracking().Where(s => s.AccountId == account.Id);
         if (since is not null) query = query.Where(s => s.TakenAt >= since);
         var rows = await query.OrderBy(s => s.TakenAt)
             .Select(s => new { s.TakenAt, s.TotalValue, s.BenchmarkPrice })
@@ -139,7 +151,7 @@ public class SnapshotService(FolioDb db, PortfolioService portfolio, FinnhubClie
     }
 }
 
-/// <summary>Snapshots the account at startup and every <see cref="Interval"/> while the app runs.</summary>
+/// <summary>Snapshots every portfolio at startup and every <see cref="Interval"/> while the app runs.</summary>
 public class SnapshotWorker(IServiceScopeFactory scopes, ILogger<SnapshotWorker> log) : BackgroundService
 {
     private static readonly TimeSpan Interval = TimeSpan.FromMinutes(15);
@@ -154,7 +166,7 @@ public class SnapshotWorker(IServiceScopeFactory scopes, ILogger<SnapshotWorker>
                 using var scope = scopes.CreateScope();
                 var finnhub = scope.ServiceProvider.GetRequiredService<FinnhubClient>();
                 if (finnhub.IsConfigured)
-                    await scope.ServiceProvider.GetRequiredService<SnapshotService>().RecordAsync(stoppingToken);
+                    await scope.ServiceProvider.GetRequiredService<SnapshotService>().RecordAllAsync(stoppingToken);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

@@ -19,7 +19,7 @@ public record WatchItemView(
     DateTime AddedAt);
 
 /// <summary>Symbols you follow without holding them. Quotes come from the same 15s cache as the portfolio.</summary>
-public class WatchlistService(FolioDb db, FinnhubClient finnhub, TradingService trading)
+public class WatchlistService(FolioDb db, FinnhubClient finnhub, TradingService trading, PortfolioContext portfolio)
 {
     /// <summary>
     /// Each watched symbol costs one Finnhub call per page refresh (60s), on top of holdings,
@@ -77,7 +77,7 @@ public class WatchlistService(FolioDb db, FinnhubClient finnhub, TradingService 
             .Where(c => symbols.Contains(c.Symbol))
             .ToDictionaryAsync(c => c.Symbol, ct);
         var held = await db.Positions.AsNoTracking()
-            .Where(p => symbols.Contains(p.Symbol))
+            .Where(p => p.AccountId == portfolio.Id && symbols.Contains(p.Symbol))
             .ToDictionaryAsync(p => p.Symbol, p => p.Quantity, ct);
 
         var quotes = await Task.WhenAll(items.Select(async i =>

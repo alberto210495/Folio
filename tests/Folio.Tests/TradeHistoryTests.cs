@@ -12,14 +12,14 @@ public class TradeHistoryTests
     {
         using var s = app.NewScope();
         for (var i = 0; i < count; i++)
-            s.Db.Trades.Add(new Trade { Symbol = "AAPL", Side = TradeSide.Buy, Quantity = i + 1, Price = 100m, ExecutedAt = T0.AddMinutes(i / 2) });
+            s.Db.Trades.Add(new Trade { AccountId = app.DefaultPortfolioId, Symbol = "AAPL", Side = TradeSide.Buy, Quantity = i + 1, Price = 100m, ExecutedAt = T0.AddMinutes(i / 2) });
         s.Db.SaveChanges();
     }
 
     private static TradePage Page(TestApp app, int? page, int? size)
     {
         using var s = app.NewScope();
-        return new TradeHistoryService(s.Db).PageAsync(page, size).GetAwaiter().GetResult();
+        return s.History.PageAsync(page, size).GetAwaiter().GetResult();
     }
 
     [Fact]
@@ -96,7 +96,7 @@ public class TradeHistoryTests
         await s.Buy("AAPL", 5);
         await s.Place("AAPL", TradeSide.Sell, OrderType.Limit, 2, 95m); // marketable: fills now
 
-        var items = (await new TradeHistoryService(s.Db).PageAsync(1, 25)).Items;
+        var items = (await s.History.PageAsync(1, 25)).Items;
         Assert.Equal(["Limit", "Market"], items.Select(t => t.OrderType));
         Assert.NotNull(items[0].OrderId);
         Assert.Null(items[1].OrderId);

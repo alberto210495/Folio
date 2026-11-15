@@ -34,7 +34,7 @@ public class PortfolioServiceTests : IDisposable
     {
         using (var s = _app.NewScope())
         {
-            s.Db.Positions.Add(new Position { Symbol = "NOQUOTE1", Quantity = 4, AvgCost = 25m });
+            s.Db.Positions.Add(new Position { AccountId = _app.DefaultPortfolioId, Symbol = "NOQUOTE1", Quantity = 4, AvgCost = 25m });
             await s.Db.SaveChangesAsync();
         }
         _app.Finnhub.Failing.Add("NOQUOTE1");
@@ -88,7 +88,7 @@ public class SnapshotServiceTests : IDisposable
     {
         using (var s = _app.NewScope())
         {
-            s.Db.Positions.Add(new Position { Symbol = "NOQUOTE2", Quantity = 1, AvgCost = 10m });
+            s.Db.Positions.Add(new Position { AccountId = _app.DefaultPortfolioId, Symbol = "NOQUOTE2", Quantity = 1, AvgCost = 10m });
             await s.Db.SaveChangesAsync();
         }
         _app.Finnhub.Failing.Add("NOQUOTE2");
