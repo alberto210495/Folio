@@ -9,7 +9,7 @@ const pct = new Intl.NumberFormat("en-US", { style: "percent", minimumFractionDi
 const shares = new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 });
 const timeFmt = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
 
-const state = { portfolio: null, quote: null, allocMode: "holding", configured: true, history: null, range: "1M" };
+const state = { portfolio: null, quote: null, allocMode: "holding", configured: true, history: null, range: "1M", histClear: null, allocClear: null };
 
 // ---------- helpers ----------
 function esc(s) {
@@ -86,6 +86,14 @@ function renderKpis(p) {
 const RANGE_TEXT = { "1D": "past day", "1W": "past week", "1M": "past month", "3M": "past 3 months", "1Y": "past year", ALL: "all time" };
 const SVG_NS = "http://www.w3.org/2000/svg";
 const compactUsd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 1 });
+const BENCH_KEY = "folio.showBenchmark";
+
+const benchToggle = $("#bench-toggle");
+try { benchToggle.checked = localStorage.getItem(BENCH_KEY) !== "0"; } catch { /* storage unavailable */ }
+benchToggle.addEventListener("change", () => {
+  try { localStorage.setItem(BENCH_KEY, benchToggle.checked ? "1" : "0"); } catch { /* ignore */ }
+  renderHistory();
+});
 
 async function loadHistory() {
   try {
@@ -97,10 +105,10 @@ async function loadHistory() {
 }
 
 function historyPoints() {
-  const pts = (state.history?.points ?? []).map((p) => ({ t: new Date(p.t), v: p.v }));
-  // Extend the line to the live value so the chart always ends at "now".
+  const pts = (state.history?.points ?? []).map((p) => ({ t: new Date(p.t), v: p.v, b: p.b }));
+  // Extend both lines to live values so the chart always ends at "now".
   const p = state.portfolio;
-  if (p && !p.anyStale) pts.push({ t: new Date(), v: p.totalValue, live: true });
+  if (p && !p.anyStale) pts.push({ t: new Date(), v: p.totalValue, b: state.history?.benchmarkNow ?? null, live: true });
   return pts;
 }
 
@@ -118,10 +126,21 @@ function svgEl(name, attrs, text) {
   return el;
 }
 
+function pctChange(from, to) {
+  return from ? ((to - from) / from) * 100 : 0;
+}
+
 function renderHistory() {
   const box = $("#hist-chart");
   const pts = historyPoints();
   const change = $("#hist-change");
+  const benchSym = state.history?.benchmarkSymbol ?? "SPY";
+  const hasBench = pts.filter((p) => p.b != null).length >= 2;
+  const showBench = hasBench && benchToggle.checked;
+
+  $("#bench-legend").hidden = !hasBench;
+  $("#bench-name").textContent = benchSym === "SPY" ? "S&P 500 (SPY)" : benchSym;
+  state.histClear = null;
 
   if (pts.length < 2 || pts[pts.length - 1].t - pts[0].t < 60_000) {
     change.innerHTML = "";
@@ -129,15 +148,24 @@ function renderHistory() {
     return;
   }
 
+  // Header: change over the range, and how the benchmark did over the same window.
   const first = pts[0].v, last = pts[pts.length - 1].v;
-  change.innerHTML = `${pnl(last - first, first ? ((last - first) / first) * 100 : 0)} <span class="muted">${RANGE_TEXT[state.range]}</span>`;
+  let header = `${pnl(last - first, pctChange(first, last))} <span class="muted">${RANGE_TEXT[state.range]}</span>`;
+  const bPts = pts.filter((p) => p.b != null);
+  if (hasBench) {
+    const bFirst = bPts[0].b, bLast = bPts[bPts.length - 1].b;
+    const bp = pctChange(bFirst, bLast);
+    header += ` <span class="muted">· ${esc(benchSym)}</span> <span class="${tone(bp)}">${arrow(bp)}${signed(bp / 100, pct)}</span>`;
+  }
+  change.innerHTML = header;
 
   const W = box.clientWidth, H = box.clientHeight;
-  const m = { top: 10, right: 12, bottom: 24, left: 64 };
+  const m = { top: 10, right: showBench ? 76 : 12, bottom: 24, left: 64 };
   const iw = W - m.left - m.right, ih = H - m.top - m.bottom;
 
-  // Y domain: data, padded; starting cash joins only if it's already near the data.
-  let lo = Math.min(...pts.map((p) => p.v)), hi = Math.max(...pts.map((p) => p.v));
+  // Y domain: data (both lines if shown), padded; starting cash joins only if it's already near the data.
+  const values = pts.map((p) => p.v).concat(showBench ? bPts.map((p) => p.b) : []);
+  let lo = Math.min(...values), hi = Math.max(...values);
   const ref = state.history?.startingCash;
   const span0 = Math.max(hi - lo, hi * 0.01);
   if (ref != null && ref >= lo - span0 && ref <= hi + span0) { lo = Math.min(lo, ref); hi = Math.max(hi, ref); }
@@ -151,11 +179,12 @@ function renderHistory() {
   const y = (v) => m.top + (1 - (v - y0) / (y1 - y0)) * ih;
 
   const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, role: "img",
-    "aria-label": `Portfolio value ${RANGE_TEXT[state.range]}: from ${usd.format(first)} to ${usd.format(last)}` });
+    "aria-label": `Portfolio value ${RANGE_TEXT[state.range]}: from ${usd.format(first)} to ${usd.format(last)}` +
+      (showBench ? `. ${benchSym} comparison ends at ${usd.format(bPts[bPts.length - 1].b)}` : "") });
 
   // Grid + y labels
   for (let v = y0; v <= y1 + step / 2; v += step) {
-    svg.append(svgEl("line", { class: v === y0 ? "baseline" : "grid-line", x1: m.left, x2: W - m.right, y1: y(v), y2: y(v) }));
+    svg.append(svgEl("line", { class: v === y0 ? "baseline" : "grid-line", x1: m.left, x2: m.left + iw, y1: y(v), y2: y(v) }));
     svg.append(svgEl("text", { class: "axis-label", x: m.left - 8, y: y(v) + 4, "text-anchor": "end" }, compactUsd.format(v)));
   }
 
@@ -171,24 +200,55 @@ function renderHistory() {
 
   // Starting-cash reference
   if (ref != null && ref >= y0 && ref <= y1) {
-    svg.append(svgEl("line", { class: "ref-line", x1: m.left, x2: W - m.right, y1: y(ref), y2: y(ref) }));
+    svg.append(svgEl("line", { class: "ref-line", x1: m.left, x2: m.left + iw, y1: y(ref), y2: y(ref) }));
     svg.append(svgEl("text", { class: "ref-label", x: m.left + 6, y: y(ref) - 6 }, "Starting cash"));
   }
 
-  // Area + line
+  // Portfolio area + line
   const d = pts.map((p, i) => `${i ? "L" : "M"}${x(p.t).toFixed(1)},${y(p.v).toFixed(1)}`).join("");
   svg.append(svgEl("path", { class: "area", d: `${d}L${x(t1)},${y(y0)}L${x(t0)},${y(y0)}Z` }));
+
+  // Benchmark line (drawn beneath the portfolio line); gaps where no price was recorded.
+  if (showBench) {
+    let bd = "", pen = false;
+    for (const p of pts) {
+      if (p.b == null) { pen = false; continue; }
+      bd += `${pen ? "L" : "M"}${x(p.t).toFixed(1)},${y(p.b).toFixed(1)}`;
+      pen = true;
+    }
+    svg.append(svgEl("path", { class: "line bench", d: bd }));
+  }
   svg.append(svgEl("path", { class: "line", d }));
 
-  // Hover: crosshair + dot + tooltip on the nearest point
+  // Direct end labels, nudged apart when the lines finish close together.
+  if (showBench) {
+    let yv = y(last), yb = y(bPts[bPts.length - 1].b);
+    const gap = 14;
+    if (Math.abs(yv - yb) < gap) {
+      const mid = (yv + yb) / 2, dir = yv <= yb ? -1 : 1;
+      yv = mid + (dir * gap) / 2;
+      yb = mid - (dir * gap) / 2;
+    }
+    svg.append(svgEl("text", { class: "end-label", x: m.left + iw + 8, y: yv + 4 }, "Portfolio"));
+    svg.append(svgEl("text", { class: "end-label", x: m.left + iw + 8, y: yb + 4 }, benchSym));
+  }
+
+  // Hover / touch: crosshair + dots + tooltip on the nearest point
   const cross = svgEl("line", { class: "crosshair", y1: m.top, y2: m.top + ih, visibility: "hidden" });
   const dot = svgEl("circle", { class: "dot", r: 5, visibility: "hidden" });
+  const bdot = svgEl("circle", { class: "dot", r: 5, visibility: "hidden", style: "fill:var(--s2)" });
   const hit = svgEl("rect", { x: m.left, y: 0, width: iw, height: H, fill: "transparent" });
-  svg.append(cross, dot, hit);
+  svg.append(cross, bdot, dot, hit);
 
   const tip = $("#hist-tip");
   const tipFmt = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
-  hit.addEventListener("mousemove", (ev) => {
+
+  const hide = () => {
+    tip.hidden = true;
+    for (const el of [cross, dot, bdot]) el.setAttribute("visibility", "hidden");
+  };
+
+  const show = (ev) => {
     const rect = svg.getBoundingClientRect();
     const tx = t0 + ((ev.clientX - rect.left - m.left) / iw) * (t1 - t0);
     let best = pts[0];
@@ -197,18 +257,28 @@ function renderHistory() {
     cross.setAttribute("x1", px); cross.setAttribute("x2", px); cross.setAttribute("visibility", "visible");
     dot.setAttribute("cx", px); dot.setAttribute("cy", py); dot.setAttribute("visibility", "visible");
 
-    const vsStart = ref ? `<br>${pnl(best.v - ref, ((best.v - ref) / ref) * 100)} <span class="muted">vs start</span>` : "";
-    tip.innerHTML = `<b>${usd.format(best.v)}</b><br><span class="muted">${best.live ? "Now" : tipFmt.format(best.t)}</span>${vsStart}`;
+    let rows = `<div class="row"><span><span class="sw-line" style="background:var(--s1)"></span>Portfolio</span><b>${usd.format(best.v)}</b></div>`;
+    if (showBench && best.b != null) {
+      bdot.setAttribute("cx", px); bdot.setAttribute("cy", y(best.b)); bdot.setAttribute("visibility", "visible");
+      const diff = best.v - best.b;
+      rows += `<div class="row"><span><span class="sw-line" style="background:var(--s2)"></span>${esc(benchSym)}</span><b>${usd.format(best.b)}</b></div>`;
+      rows += `<div class="row"><span class="muted">${diff >= 0 ? "Ahead by" : "Behind by"}</span><span class="${tone(diff)}">${usd.format(Math.abs(diff))}</span></div>`;
+    } else {
+      bdot.setAttribute("visibility", "hidden");
+      if (ref) rows += `<div class="row"><span class="muted">vs start</span>${pnl(best.v - ref, pctChange(ref, best.v))}</div>`;
+    }
+    tip.innerHTML = `<div class="muted">${best.live ? "Now" : tipFmt.format(best.t)}</div>${rows}`;
     tip.hidden = false;
     const sx = rect.left + px, sy = rect.top + py;
-    tip.style.left = `${Math.min(sx + 12, window.innerWidth - tip.offsetWidth - 8)}px`;
+    tip.style.left = `${Math.max(8, Math.min(sx + 12, window.innerWidth - tip.offsetWidth - 8))}px`;
     tip.style.top = `${Math.max(8, sy - tip.offsetHeight - 12)}px`;
-  });
-  hit.addEventListener("mouseleave", () => {
-    tip.hidden = true;
-    cross.setAttribute("visibility", "hidden");
-    dot.setAttribute("visibility", "hidden");
-  });
+  };
+
+  // Pointer events cover mouse, touch and pen. Touch keeps the tooltip until you tap elsewhere.
+  hit.addEventListener("pointerdown", show);
+  hit.addEventListener("pointermove", show);
+  hit.addEventListener("pointerleave", (ev) => { if (ev.pointerType === "mouse") hide(); });
+  state.histClear = hide;
 
   box.replaceChildren(svg);
 }
@@ -226,6 +296,12 @@ new ResizeObserver(() => {
   cancelAnimationFrame(resizeRaf);
   resizeRaf = requestAnimationFrame(renderHistory);
 }).observe($("#hist-chart"));
+
+// A tap outside a chart dismisses its touch tooltip.
+document.addEventListener("pointerdown", (ev) => {
+  if (!ev.target.closest("#hist-chart")) state.histClear?.();
+  if (!ev.target.closest("#alloc-bar, #alloc-rows")) state.allocClear?.();
+});
 
 // ---------- Allocation ----------
 function allocationItems(p) {
@@ -292,7 +368,7 @@ function renderAllocation() {
     bar.querySelectorAll(".seg-fill").forEach((s) => s.classList.toggle("on", s.dataset.key === key));
     rows.querySelectorAll("tr").forEach((r) => r.classList.toggle("on", r.dataset.key === key));
     const it = key && byKey.get(key);
-    if (it && ev?.type === "mousemove") {
+    if (it && ev) {
       tip.hidden = false;
       tip.innerHTML = `<b>${esc(it.label)}</b>${it.sub ? ` · ${esc(it.sub)}` : ""}<br>${usd.format(it.value)} · ${pct.format(it.weight)}`;
       const x = Math.min(ev.clientX + 12, window.innerWidth - tip.offsetWidth - 8);
@@ -303,10 +379,16 @@ function renderAllocation() {
     }
   };
 
-  bar.onmousemove = (ev) => highlight(ev.target.closest(".seg-fill")?.dataset.key, ev);
-  bar.onmouseleave = () => highlight(null);
-  rows.onmouseover = (ev) => highlight(ev.target.closest("tr")?.dataset.key, ev);
-  rows.onmouseleave = () => highlight(null);
+  // Pointer events cover mouse, touch and pen; touch keeps the highlight until you tap elsewhere.
+  const fromBar = (ev) => highlight(ev.target.closest(".seg-fill")?.dataset.key, ev);
+  const leave = (ev) => { if (ev.pointerType === "mouse") highlight(null); };
+  bar.onpointerdown = fromBar;
+  bar.onpointermove = fromBar;
+  bar.onpointerleave = leave;
+  rows.onpointerover = (ev) => highlight(ev.target.closest("tr")?.dataset.key);
+  rows.onpointerdown = (ev) => highlight(ev.target.closest("tr")?.dataset.key);
+  rows.onpointerleave = leave;
+  state.allocClear = () => highlight(null);
 }
 
 document.querySelectorAll("[data-alloc]").forEach((btn) =>

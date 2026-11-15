@@ -23,6 +23,9 @@ namespace Folio.Data.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
+                    b.Property<decimal?>("BenchmarkStartPrice")
+                        .HasColumnType("TEXT");
+
                     b.Property<decimal>("Cash")
                         .HasColumnType("TEXT");
 
@@ -68,6 +71,9 @@ namespace Folio.Data.Migrations
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
+
+                    b.Property<decimal?>("BenchmarkPrice")
+                        .HasColumnType("TEXT");
 
                     b.Property<decimal>("Cash")
                         .HasColumnType("TEXT");

@@ -106,6 +106,7 @@ public partial class TradingService(FolioDb db, FinnhubClient finnhub, ILogger<T
             var account = await db.GetAccountAsync(ct);
             account.StartingCash = account.Cash = Money(startingCash);
             account.RealizedPnl = 0;
+            account.BenchmarkStartPrice = null; // re-captured by the next snapshot
             account.CreatedAt = DateTime.UtcNow;
             await db.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);

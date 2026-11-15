@@ -11,6 +11,7 @@ builder.Services.AddDbContext<FolioDb>(o =>
 
 builder.Services.AddMemoryCache();
 builder.Services.Configure<FinnhubOptions>(builder.Configuration.GetSection("Finnhub"));
+builder.Services.Configure<FolioOptions>(builder.Configuration.GetSection("Folio"));
 builder.Services.AddHttpClient<FinnhubClient>((sp, http) =>
 {
     var opt = builder.Configuration.GetSection("Finnhub").Get<FinnhubOptions>() ?? new();
@@ -62,9 +63,10 @@ api.MapGet("/status", (FinnhubClient f) => new { finnhubConfigured = f.IsConfigu
 
 api.MapGet("/portfolio", (PortfolioService p, CancellationToken ct) => p.GetAsync(ct));
 
-api.MapPost("/portfolio/reset", async (ResetRequest req, TradingService t, CancellationToken ct) =>
+api.MapPost("/portfolio/reset", async (ResetRequest req, TradingService t, SnapshotService s, CancellationToken ct) =>
 {
     await t.ResetAsync(req.StartingCash, ct);
+    await s.RecordAsync(ct); // captures the new benchmark baseline right away
     return Results.NoContent();
 });
 
