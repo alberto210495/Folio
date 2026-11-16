@@ -483,4 +483,6 @@ $RECYCLE.BIN/
 
 # Folio local database
 folio.db*
+# Folio's automatic database backups
+backups/
 

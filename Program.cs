@@ -44,6 +44,8 @@ builder.Services.AddHostedService<OrderWorker>();
 builder.Services.AddScoped<WatchlistService>();
 builder.Services.AddScoped<ExportService>();
 builder.Services.AddScoped<TradeHistoryService>();
+builder.Services.AddScoped<BackupService>();
+builder.Services.AddHostedService<BackupWorker>();
 builder.Services.AddScoped<PerformanceService>();
 builder.Services.AddScoped<AlertService>();
 builder.Services.AddHostedService<AlertWorker>();
@@ -104,6 +106,27 @@ api.AddEndpointFilter(async (ctx, next) =>
     http.RequestServices.GetRequiredService<PortfolioContext>().Id = id;
     return await next(ctx);
 });
+
+// Backups and full export/import (see BackupService).
+api.MapGet("/backups", (BackupService b) => b.List());
+
+api.MapPost("/backups", async (BackupService b, CancellationToken ct) => Results.Created("/api/backups", await b.CreateAsync("manual", ct)));
+
+api.MapGet("/export/folio.json", async (BackupService b, Microsoft.Extensions.Options.IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions> json, TimeProvider time, CancellationToken ct) =>
+{
+    var archive = await b.ExportAsync(ct);
+    var bytes = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(archive, json.Value.SerializerOptions);
+    return Results.File(bytes, "application/json", $"folio-export-{time.GetUtcNow():yyyy-MM-dd}.json");
+});
+
+api.MapPost("/import", async (FolioArchive archive, BackupService b, LivePrices live, CancellationToken ct) =>
+{
+    var result = await b.ImportAsync(archive, ct);
+    live.RequestResync();
+    return Results.Ok(result);
+})
+// The one endpoint allowed a big body: everything else stays under the 64 KB limit.
+.WithMetadata(new Microsoft.AspNetCore.Mvc.RequestSizeLimitAttribute(BackupService.MaxImportBytes));
 
 api.MapGet("/portfolios", (PortfoliosService p, CancellationToken ct) => p.ListAsync(ct));
 

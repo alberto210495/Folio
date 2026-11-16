@@ -1659,6 +1659,80 @@ dlg.addEventListener("close", async () => {
   }
 });
 
+// ---------- Backups & data ----------
+const dataDlg = $("#data-dlg");
+const MAX_IMPORT_BYTES = 25 * 1024 * 1024; // same cap as the server
+const bytesFmt = (n) => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1048576).toFixed(1)} MB`;
+
+async function renderBackups() {
+  const list = $("#backup-list");
+  try {
+    const view = await api("/api/backups");
+    $("#backup-dir").textContent = view.directory;
+    $("#backup-keep").textContent = view.keep;
+    list.innerHTML = view.backups.length
+      ? view.backups.slice(0, 6).map((b) => `
+        <li><span>${timeFmt.format(new Date(b.createdAt))}${/-before-import\.db$/.test(b.name) ? ` <span class="muted">· before import</span>` : /-manual\.db$/.test(b.name) ? ` <span class="muted">· manual</span>` : ""}</span>
+        <span class="muted">${bytesFmt(b.bytes)}</span></li>`).join("")
+      : `<li class="muted">No backups yet.</li>`;
+  } catch (e) {
+    list.innerHTML = `<li class="down">${esc(e.message)}</li>`;
+  }
+}
+
+$("#data").addEventListener("click", () => {
+  $("#data-msg").textContent = "";
+  $("#import-file").value = "";
+  dataDlg.showModal();
+  renderBackups();
+});
+
+$("#backup-now").addEventListener("click", async (ev) => {
+  const btn = ev.currentTarget;
+  btn.disabled = true;
+  try {
+    const b = await api("/api/backups", { method: "POST" });
+    $("#data-msg").className = "small msg";
+    $("#data-msg").textContent = `Backed up (${bytesFmt(b.bytes)}).`;
+    await renderBackups();
+  } catch (e) {
+    $("#data-msg").className = "small msg down";
+    $("#data-msg").textContent = e.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("#import-file").addEventListener("change", async (ev) => {
+  const file = ev.target.files?.[0];
+  const msg = $("#data-msg");
+  msg.className = "small msg down";
+  if (!file) return;
+  if (file.size > MAX_IMPORT_BYTES) { msg.textContent = "That file is larger than 25 MB, so it isn't a Folio export."; return; }
+
+  let archive;
+  try { archive = JSON.parse(await file.text()); } catch { msg.textContent = "That file isn't valid JSON."; return; }
+  const n = archive?.portfolios?.length ?? 0;
+  if (!confirm(`Replace ALL portfolios, trades, orders, history, watchlist and alerts with the ${n} portfolio${n === 1 ? "" : "s"} in “${file.name}”?\n\nFolio backs up your current data first, so this can be undone.`)) {
+    ev.target.value = "";
+    return;
+  }
+  try {
+    const r = await api("/api/import", { method: "POST", body: JSON.stringify(archive) });
+    dataDlg.close();
+    state.portfolioId = null;
+    state.tradePage = 1;
+    state.knownOpenOrders = null;
+    await loadPortfolios();
+    await load();
+    toast(`Imported ${r.portfolios} portfolio${r.portfolios === 1 ? "" : "s"} and ${r.trades} trades. Your previous data is in backup ${r.backupName}.`);
+  } catch (e) {
+    msg.textContent = e.message;
+  } finally {
+    ev.target.value = "";
+  }
+});
+
 // ---------- Boot ----------
 $("#refresh").addEventListener("click", load);
 

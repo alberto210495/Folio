@@ -1,5 +1,7 @@
 # Folio
 
+[![CI](https://github.com/alberto210495/Folio/actions/workflows/ci.yml/badge.svg)](https://github.com/alberto210495/Folio/actions/workflows/ci.yml) [![CodeQL](https://github.com/alberto210495/Folio/actions/workflows/codeql.yml/badge.svg)](https://github.com/alberto210495/Folio/actions/workflows/codeql.yml)
+
 Paper-trading portfolio tracker. Buy and sell real tickers with fake money at live Finnhub prices, track P&L, and see your allocation by holding and by sector. Run several portfolios side by side to compare strategies.
 
 **Stack:** ASP.NET Core 10 minimal API · EF Core 10 + SQLite · vanilla HTML/CSS/JS (no build step) · Finnhub.
@@ -96,6 +98,13 @@ Portfolio-specific endpoints (portfolio, trades, orders, history, exports, reset
 
 Errors return `{ "error": "..." }`: 400 for rejected orders, 404 for an unknown portfolio, 429 or 503 for Finnhub problems.
 
+## Backups
+
+- **Automatic:** Folio copies `folio.db` to the `backups` folder when it starts (if the last copy is over a day old) and then daily while it runs, keeping the newest 14 (`Folio:BackupDirectory`, `Folio:BackupKeep`). Copies use SQLite's online backup, so they're consistent even mid-trade. The folder is git-ignored.
+- **Backups dialog** (top bar): see recent backups, **Back up now**, **Export everything** (one `.json` file with every portfolio, trade, order, value history, watchlist entry, alert and split), and **Restore from export**.
+- **Restoring an export** replaces all current data. Folio first validates the whole file (ids, links between trades and orders, symbols, amounts, no future dates) and refuses anything it couldn't have written itself, then saves a `…-before-import.db` backup so the restore can be undone.
+- **Restoring a `.db` backup:** stop Folio, copy the backup over `folio.db` (delete `folio.db-wal` and `folio.db-shm` if present), and start Folio again.
+
 ## Security
 
 Folio is built to run on your own computer for one person. It has no login, so these protections keep everything else out:
@@ -116,7 +125,17 @@ If you ever want Folio reachable from other devices, it needs a login first; the
 dotnet test Folio.slnx
 ```
 
-xUnit tests in `tests/Folio.Tests` cover security (headers, HTTPS redirect, foreign host names, cross-site requests and origins, injection attempts, error output; run against the real app pipeline), multiple portfolios (separation of cash, holdings, orders and history; fills into the right portfolio; reset; validation; deletion), trading (average cost, realized P&L, rounding, rejections, invalid sides), stock splits (forward and reverse, every portfolio, open orders, fractions, validation), timestamps from the app clock, company profile refresh, performance stats (win rate, averages, profit factor, drawdown and recovery), trading costs (fill prices, limit caps, cost basis, cash checks, settings), price alerts (direction, refusals, firing once, market hours, history, watchlist removal, splits, the stream event), live prices (merging ticks into quotes, message parsing, subscriptions, the event stream, tick-triggered fills), market hours (NYSE holidays, early closes, daylight saving, closed-market trading), limit and stop orders (trigger rules, fills, commitments, cancels, stale prices), company profiles and logos, the watchlist, trade history paging, CSV export (quoting, formula escaping, locale), reset, valuation, snapshots and the benchmark maths. They use a fake Finnhub and an in-memory SQLite database with the real migrations, so they need neither an API key nor a network connection. One optional test connects to the real Finnhub websocket when a `FINNHUB_KEY` environment variable is set; it streams a crypto pair, so it works even when US markets are closed.
+xUnit tests in `tests/Folio.Tests` cover backups (copies, pruning, export/import round trip, validation, the undo backup), security (headers, HTTPS redirect, foreign host names, cross-site requests and origins, injection attempts, error output; run against the real app pipeline), multiple portfolios (separation of cash, holdings, orders and history; fills into the right portfolio; reset; validation; deletion), trading (average cost, realized P&L, rounding, rejections, invalid sides), stock splits (forward and reverse, every portfolio, open orders, fractions, validation), timestamps from the app clock, company profile refresh, performance stats (win rate, averages, profit factor, drawdown and recovery), trading costs (fill prices, limit caps, cost basis, cash checks, settings), price alerts (direction, refusals, firing once, market hours, history, watchlist removal, splits, the stream event), live prices (merging ticks into quotes, message parsing, subscriptions, the event stream, tick-triggered fills), market hours (NYSE holidays, early closes, daylight saving, closed-market trading), limit and stop orders (trigger rules, fills, commitments, cancels, stale prices), company profiles and logos, the watchlist, trade history paging, CSV export (quoting, formula escaping, locale), reset, valuation, snapshots and the benchmark maths. They use a fake Finnhub and an in-memory SQLite database with the real migrations, so they need neither an API key nor a network connection. One optional test connects to the real Finnhub websocket when a `FINNHUB_KEY` environment variable is set; it streams a crypto pair, so it works even when US markets are closed.
+
+## Continuous integration
+
+GitHub Actions run on every push and pull request to `main`:
+
+- **CI** (`.github/workflows/ci.yml`) builds Folio, runs every test, and fails if a package has a known vulnerability. It needs no secrets: the live Finnhub test skips itself.
+- **CodeQL** (`.github/workflows/codeql.yml`) scans the C# and JavaScript for security issues, and also runs weekly. Results are under the repository's **Security → Code scanning** tab.
+- **Dependabot** (`.github/dependabot.yml`) opens weekly pull requests for package and action updates. It stays on .NET 10 (EF Core and ASP.NET Core 11 need .NET 11).
+
+Actions are pinned to exact commits and run with read-only permissions.
 
 ## Notes
 

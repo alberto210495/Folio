@@ -19,6 +19,7 @@
       <span id="live" class="live small" hidden aria-live="polite"></span>
       <span id="updated" class="muted small" aria-live="polite"></span>
       <button id="refresh" class="btn ghost" type="button" title="Refresh quotes">Refresh</button>
+      <button id="data" class="btn ghost" type="button">Backups</button>
       <button id="reset" class="btn ghost" type="button">Reset portfolio</button>
     </div>
   </header>
@@ -354,6 +355,24 @@
       <div class="dlg-actions">
         <button value="cancel" class="btn ghost" formnovalidate>Cancel</button>
         <button value="ok" class="btn primary" data-default>Apply split</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="data-dlg" aria-labelledby="data-h">
+    <form method="dialog" class="dlg">
+      <h2 id="data-h">Backups &amp; data</h2>
+      <p class="muted small">Folio copies its database every day and keeps the last <span id="backup-keep">14</span>, in <code id="backup-dir" class="path"></code>.</p>
+      <ul id="backup-list" class="backup-list"></ul>
+      <div class="data-actions">
+        <button id="backup-now" type="button" class="btn xs">Back up now</button>
+        <a class="btn xs" href="/api/export/folio.json" download>Export everything (.json)</a>
+        <label class="btn xs file-btn">Restore from export…<input id="import-file" type="file" accept=".json,application/json"></label>
+      </div>
+      <p class="muted small">An export holds every portfolio, trade, order, value history, watchlist and alert in one file, which you can keep anywhere or move to another computer. Restoring replaces all current data, after backing it up.</p>
+      <p id="data-msg" class="small msg" role="status"></p>
+      <div class="dlg-actions">
+        <button value="close" class="btn ghost" data-default>Close</button>
       </div>
     </form>
   </dialog>
