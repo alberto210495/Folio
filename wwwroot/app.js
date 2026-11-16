@@ -727,7 +727,7 @@ function renderHistory() {
     if (showBench && best.b != null) {
       bdot.setAttribute("cx", px); bdot.setAttribute("cy", y(best.b)); bdot.setAttribute("visibility", "visible");
       const diff = best.v - best.b;
-      rows += `<div class="row"><span><span class="sw-line" style="background:var(--s2)"></span>${esc(benchSym)}</span><b>${usd.format(best.b)}</b></div>`;
+      rows += `<div class="row"><span><span class="sw-line dash"></span>${esc(benchSym)}</span><b>${usd.format(best.b)}</b></div>`;
       rows += `<div class="row"><span class="muted">${diff >= 0 ? "Ahead by" : "Behind by"}</span><span class="${tone(diff)}">${usd.format(Math.abs(diff))}</span></div>`;
     } else {
       bdot.setAttribute("visibility", "hidden");
