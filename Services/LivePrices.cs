@@ -33,6 +33,7 @@ public class LivePrices(TimeProvider time, bool regularHoursOnly = true)
     private readonly ConcurrentDictionary<string, DateTimeOffset> _interest = new(StringComparer.OrdinalIgnoreCase);
     private readonly Channel<bool> _resync = Channel.CreateBounded<bool>(new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropWrite });
     private long _seq;
+    private long _alertsVersion;
 
     /// <summary>True while the websocket to Finnhub is open.</summary>
     public bool Connected { get; set; }
@@ -85,6 +86,11 @@ public class LivePrices(TimeProvider time, bool regularHoursOnly = true)
         return _interest.Keys.ToList();
     }
 
+    /// <summary>Tells open pages (through an "alerts" event) that a price alert fired.</summary>
+    public void SignalAlerts() => Interlocked.Increment(ref _alertsVersion);
+
+    public long AlertsVersion => Interlocked.Read(ref _alertsVersion);
+
     /// <summary>Asks the stream to update its subscriptions now instead of at the next interval.</summary>
     public void RequestResync() => _resync.Writer.TryWrite(true);
 
@@ -113,12 +119,14 @@ public class LivePrices(TimeProvider time, bool regularHoursOnly = true)
     public Quote Merge(Quote quote) => Merge(quote, Get(quote.Symbol), Now, regularHoursOnly);
 
     /// <summary>
-    /// Server-sent events for the page: a "status" event first and every 15s, and a "prices" event
-    /// (symbol to price and time) at most once a second when regular-hours prices change.
+    /// Server-sent events for the page: a "status" event first and every 15s, a "prices" event
+    /// (symbol to price and time) at most once a second when regular-hours prices change, and an
+    /// "alerts" event when a price alert fires (the page then fetches <c>/api/alerts</c>).
     /// </summary>
     public async IAsyncEnumerable<SseItem<object>> StreamAsync([EnumeratorCancellation] CancellationToken ct)
     {
         var (_, seq) = ChangedSince(long.MaxValue); // start from now; the page already has current prices
+        var alerts = AlertsVersion;
         bool? lastConnected = null;
         var lastStatus = DateTimeOffset.MinValue;
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
@@ -136,6 +144,12 @@ public class LivePrices(TimeProvider time, bool regularHoursOnly = true)
                 .Where(Counts)
                 .ToDictionary(t => t.Symbol, t => new { p = t.Price, t = t.At });
             if (prices.Count > 0) yield return new SseItem<object>(prices, "prices");
+
+            if (AlertsVersion != alerts)
+            {
+                alerts = AlertsVersion;
+                yield return new SseItem<object>(new { version = alerts }, "alerts");
+            }
         }
         while (await WaitTick(timer, ct));
     }

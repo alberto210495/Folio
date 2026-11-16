@@ -19,7 +19,7 @@ public record WatchItemView(
     DateTime AddedAt);
 
 /// <summary>Symbols you follow without holding them. Quotes come from the same 15s cache as the portfolio.</summary>
-public class WatchlistService(FolioDb db, FinnhubClient finnhub, TradingService trading, PortfolioContext portfolio)
+public class WatchlistService(FolioDb db, FinnhubClient finnhub, TradingService trading, PortfolioContext portfolio, TimeProvider time)
 {
     /// <summary>
     /// Each watched symbol costs one Finnhub call per page refresh (60s), on top of holdings,
@@ -47,7 +47,7 @@ public class WatchlistService(FolioDb db, FinnhubClient finnhub, TradingService 
         if (await finnhub.GetQuoteAsync(symbol, ct) is null)
             throw new TradeRejectedException($"No quote found for {symbol}. Check the ticker.");
 
-        var item = new WatchlistItem { Symbol = symbol };
+        var item = new WatchlistItem { Symbol = symbol, AddedAt = time.GetUtcNow().UtcDateTime };
         db.Watchlist.Add(item);
         try
         {
@@ -63,11 +63,18 @@ public class WatchlistService(FolioDb db, FinnhubClient finnhub, TradingService 
         return (await ViewsAsync([item], ct))[0];
     }
 
-    /// <summary>Removes the symbol. Returns false if it wasn't on the list.</summary>
+    /// <summary>
+    /// Removes the symbol and its waiting price alerts (alerts live on the watchlist, so they'd be invisible
+    /// otherwise). Fired alerts stay in the history. Returns false if it wasn't on the list.
+    /// </summary>
     public async Task<bool> RemoveAsync(string? rawSymbol, CancellationToken ct = default)
     {
         var symbol = TradingService.NormalizeSymbol(rawSymbol);
-        return await db.Watchlist.Where(w => w.Symbol == symbol).ExecuteDeleteAsync(ct) > 0;
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        await db.Alerts.Where(a => a.Symbol == symbol && a.TriggeredAt == null).ExecuteDeleteAsync(ct);
+        var removed = await db.Watchlist.Where(w => w.Symbol == symbol).ExecuteDeleteAsync(ct) > 0;
+        await tx.CommitAsync(ct);
+        return removed;
     }
 
     private async Task<IReadOnlyList<WatchItemView>> ViewsAsync(IReadOnlyList<WatchlistItem> items, CancellationToken ct)

@@ -21,8 +21,10 @@ public record OrderView(
     decimal? CurrentPrice);
 
 /// <summary>Places, cancels and fills resting limit and stop orders.</summary>
-public class OrderService(FolioDb db, TradingService trading, FinnhubClient finnhub, MarketClock clock, PortfolioContext portfolio, ILogger<OrderService> log)
+public class OrderService(FolioDb db, TradingService trading, FinnhubClient finnhub, MarketClock clock, PortfolioContext portfolio, TimeProvider time, ILogger<OrderService> log)
 {
+    private DateTime Now => time.GetUtcNow().UtcDateTime;
+
     // Serialises order checks and cancels so an order can't be cancelled mid-fill.
     private static readonly SemaphoreSlim OrderLock = new(1, 1);
 
@@ -42,6 +44,7 @@ public class OrderService(FolioDb db, TradingService trading, FinnhubClient finn
     public async Task<OrderView> PlaceAsync(PlaceOrderRequest req, CancellationToken ct = default)
     {
         var symbol = TradingService.NormalizeSymbol(req.Symbol);
+        var side = TradingService.ValidateSide(req.Side);
         var qty = TradingService.ValidateQuantity(req.Quantity);
         if (req.Price <= 0) throw new TradeRejectedException("Price must be greater than zero.");
         if (decimal.Round(req.Price, 4) != req.Price) throw new TradeRejectedException("Price supports at most 4 decimal places.");
@@ -77,15 +80,17 @@ public class OrderService(FolioDb db, TradingService trading, FinnhubClient finn
             else
             {
                 var account = await db.GetAccountAsync(accountId, ct);
-                var committed = open.Where(o => o.Side == TradeSide.Buy).Sum(o => o.Quantity * o.Price);
-                var cost = qty * req.Price;
+                // Commission and slippage count too. A limit never fills past its price, so it isn't slipped.
+                var committed = open.Where(o => o.Side == TradeSide.Buy)
+                    .Sum(o => TradingService.EstimatedBuyCost(o.Quantity, o.Price, account, capped: o.Type == OrderType.Limit));
+                var cost = TradingService.EstimatedBuyCost(qty, req.Price, account, capped: req.Type == OrderType.Limit);
                 if (cost > account.Cash - committed)
                     throw new TradeRejectedException(committed > 0
                         ? $"Order needs about {Usd(cost)}; you have {Usd(account.Cash)} cash with {Usd(committed)} already in open buy orders."
                         : $"Insufficient cash: order needs about {Usd(cost)}, you have {Usd(account.Cash)}.");
             }
 
-            var order = new Order { AccountId = accountId, Symbol = symbol, Side = req.Side, Type = req.Type, Quantity = qty, Price = req.Price };
+            var order = new Order { AccountId = accountId, Symbol = symbol, Side = side, Type = req.Type, Quantity = qty, Price = req.Price, CreatedAt = Now };
             db.Orders.Add(order);
             await db.SaveChangesAsync(ct);
 
@@ -112,7 +117,7 @@ public class OrderService(FolioDb db, TradingService trading, FinnhubClient finn
                 throw new TradeRejectedException($"Order {id} is already {order.Status.ToString().ToLowerInvariant()}.");
 
             order.Status = OrderStatus.Cancelled;
-            order.ClosedAt = DateTime.UtcNow;
+            order.ClosedAt = Now;
             await db.SaveChangesAsync(ct);
             return ToView(order, null);
         }
@@ -120,6 +125,14 @@ public class OrderService(FolioDb db, TradingService trading, FinnhubClient finn
         {
             OrderLock.Release();
         }
+    }
+
+    /// <summary>Applies a stock split (see <see cref="TradingService.ApplySplitAsync"/>) while no order check can run.</summary>
+    public async Task<SplitResult> ApplySplitAsync(SplitRequest req, CancellationToken ct = default)
+    {
+        await OrderLock.WaitAsync(ct);
+        try { return await trading.ApplySplitAsync(req, ct); }
+        finally { OrderLock.Release(); }
     }
 
     /// <summary>Checks open orders (all, or one symbol's) against a live quote. Returns how many filled.</summary>
@@ -191,20 +204,20 @@ public class OrderService(FolioDb db, TradingService trading, FinnhubClient finn
     {
         try
         {
-            await trading.FillAsync(order.AccountId, order.Symbol, order.Side, order.Quantity, price, order.Id, _ =>
+            var trade = await trading.FillAsync(order.AccountId, order.Symbol, order.Side, order.Quantity, price, order.Id, t =>
             {
                 order.Status = OrderStatus.Filled;
-                order.FillPrice = price;
-                order.ClosedAt = DateTime.UtcNow;
-            }, ct);
-            log.LogInformation("Filled {Type} {Side} {Qty} {Symbol} at {Price}", order.Type, order.Side, order.Quantity, order.Symbol, price);
+                order.FillPrice = t.Price; // after slippage
+                order.ClosedAt = Now;
+            }, limit: order.Type == OrderType.Limit ? order.Price : null, ct: ct);
+            log.LogInformation("Filled {Type} {Side} {Qty} {Symbol} at {Price}", order.Type, order.Side, order.Quantity, order.Symbol, trade.Price);
             return true;
         }
         catch (TradeRejectedException ex)
         {
             order.Status = OrderStatus.Rejected;
             order.Reason = ex.Message.Length > 300 ? ex.Message[..300] : ex.Message;
-            order.ClosedAt = DateTime.UtcNow;
+            order.ClosedAt = Now;
             await db.SaveChangesAsync(ct);
             log.LogInformation("Rejected order {Id}: {Reason}", order.Id, ex.Message);
             return false;

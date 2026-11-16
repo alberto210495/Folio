@@ -36,6 +36,9 @@ builder.Services.AddHostedService<OrderWorker>();
 builder.Services.AddScoped<WatchlistService>();
 builder.Services.AddScoped<ExportService>();
 builder.Services.AddScoped<TradeHistoryService>();
+builder.Services.AddScoped<PerformanceService>();
+builder.Services.AddScoped<AlertService>();
+builder.Services.AddHostedService<AlertWorker>();
 
 builder.Services.ConfigureHttpJsonOptions(o =>
     o.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
@@ -97,9 +100,9 @@ api.MapPost("/portfolios", async (CreatePortfolioRequest req, PortfoliosService 
     return Results.Created($"/api/portfolios/{created.Id}", created);
 });
 
-api.MapPatch("/portfolios/{id:int}", async (int id, RenamePortfolioRequest req, PortfoliosService p, CancellationToken ct) =>
+api.MapPatch("/portfolios/{id:int}", async (int id, UpdatePortfolioRequest req, PortfoliosService p, CancellationToken ct) =>
 {
-    await p.RenameAsync(id, req.Name, ct);
+    await p.UpdateAsync(id, req, ct);
     return Results.NoContent();
 });
 
@@ -151,6 +154,16 @@ api.MapPost("/trades", async (TradeRequest req, TradingService t, SnapshotServic
     return Results.Created("/api/trades", trade);
 });
 
+// Stock splits apply to every portfolio, so they ignore ?portfolio.
+api.MapGet("/splits", (string? symbol, TradingService t, CancellationToken ct) => t.ListSplitsAsync(symbol, ct));
+
+// No snapshot here: cached quotes may still carry the pre-split price for a few seconds.
+api.MapPost("/splits", async (SplitRequest req, OrderService o, CancellationToken ct) =>
+{
+    var result = await o.ApplySplitAsync(req, ct);
+    return Results.Created($"/api/splits/{result.Id}", result);
+});
+
 api.MapGet("/watchlist", (WatchlistService w, CancellationToken ct) => w.ListAsync(ct));
 
 api.MapPost("/watchlist", async (WatchlistAddRequest req, WatchlistService w, LivePrices live, CancellationToken ct) =>
@@ -165,6 +178,30 @@ api.MapDelete("/watchlist/{symbol}", async (string symbol, WatchlistService w, C
         ? Results.NoContent()
         : Results.NotFound(new { error = $"{symbol.ToUpperInvariant()} isn't on your watchlist." }));
 
+// Price alerts on watchlist symbols. Shared by every portfolio, so they ignore ?portfolio.
+api.MapGet("/alerts", (AlertService a, CancellationToken ct) => a.ListAsync(ct));
+
+api.MapPost("/alerts", async (CreateAlertRequest req, AlertService a, CancellationToken ct) =>
+{
+    var alert = await a.CreateAsync(req, ct);
+    return Results.Created($"/api/alerts/{alert.Id}", alert);
+});
+
+api.MapDelete("/alerts/{id:int}", async (int id, AlertService a, CancellationToken ct) =>
+    await a.DeleteAsync(id, ct) ? Results.NoContent() : Results.NotFound(new { error = "That alert doesn't exist any more." }));
+
+api.MapDelete("/alerts/triggered", async (AlertService a, CancellationToken ct) =>
+{
+    await a.ClearTriggeredAsync(ct);
+    return Results.NoContent();
+});
+
+api.MapPost("/alerts/seen", async (MarkSeenRequest req, AlertService a, CancellationToken ct) =>
+{
+    await a.MarkSeenAsync(req.Ids ?? [], ct);
+    return Results.NoContent();
+});
+
 // CSV downloads. The UTF-8 BOM makes Excel read the file as UTF-8.
 var csvFile = (CsvFile f) => Results.File(
     [.. System.Text.Encoding.UTF8.GetPreamble(), .. System.Text.Encoding.UTF8.GetBytes(f.Content)],
@@ -172,6 +209,8 @@ var csvFile = (CsvFile f) => Results.File(
 api.MapGet("/export/trades.csv", async (ExportService e, CancellationToken ct) => csvFile(await e.TradesAsync(ct)));
 api.MapGet("/export/holdings.csv", async (ExportService e, CancellationToken ct) => csvFile(await e.HoldingsAsync(ct)));
 api.MapGet("/export/orders.csv", async (ExportService e, CancellationToken ct) => csvFile(await e.OrdersAsync(ct)));
+
+api.MapGet("/performance", (PerformanceService p, CancellationToken ct) => p.GetAsync(ct));
 
 api.MapGet("/history", (string? range, SnapshotService s, CancellationToken ct) => s.GetHistoryAsync(range, ct));
 
@@ -197,3 +236,5 @@ api.MapGet("/search", async (string q, FinnhubClient f, CancellationToken ct) =>
 app.Run();
 
 record ResetRequest(decimal StartingCash);
+
+record MarkSeenRequest(int[]? Ids);

@@ -9,7 +9,7 @@ const pct = new Intl.NumberFormat("en-US", { style: "percent", minimumFractionDi
 const shares = new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 });
 const timeFmt = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
 
-const state = { portfolio: null, quote: null, allocMode: "holding", configured: true, history: null, range: "1M", histClear: null, allocClear: null, orders: null, knownOpenOrders: null, watchlist: [], market: null, tradePage: 1, tradePageSize: 25, streaming: false, live: { open: false, upstream: false }, portfolios: [], portfolioId: null };
+const state = { portfolio: null, quote: null, allocMode: "holding", configured: true, history: null, range: "1M", histClear: null, allocClear: null, orders: null, knownOpenOrders: null, watchlist: [], market: null, tradePage: 1, tradePageSize: 25, streaming: false, live: { open: false, upstream: false }, portfolios: [], portfolioId: null, alerts: { active: [], triggered: [] } };
 
 // ---------- helpers ----------
 function esc(s) {
@@ -59,6 +59,19 @@ async function api(path, opts = {}) {
   return body;
 }
 
+// Enter in a dialog's text or number field would press the form's *first* button, which in every
+// dialog here is Cancel (or "Delete portfolio"). Press the dialog's main button, marked data-default, instead.
+document.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Enter" || ev.isComposing || ev.defaultPrevented) return;
+  const input = ev.target;
+  if (!(input instanceof HTMLInputElement) || !input.form || !input.closest("dialog")) return;
+  if (["checkbox", "radio", "button", "submit", "reset"].includes(input.type)) return;
+  const main = input.form.querySelector("button[data-default]");
+  if (!main || main.disabled) return;
+  ev.preventDefault();
+  input.form.requestSubmit(main);
+});
+
 function banner(html) {
   const el = $("#banner");
   el.hidden = !html;
@@ -70,6 +83,19 @@ const PORTFOLIO_KEY = "folio.portfolio";
 try { state.portfolioId = Number(localStorage.getItem(PORTFOLIO_KEY)) || null; } catch { /* storage unavailable */ }
 
 const currentPortfolio = () => state.portfolios.find((p) => p.id === state.portfolioId);
+
+/** The open portfolio's trading costs: commission in dollars, slippage in basis points. */
+function costs() {
+  const p = currentPortfolio();
+  return { fee: p?.commission ?? 0, bps: p?.slippageBps ?? 0 };
+}
+
+/** Commission plus slippage paid on one trade, with the split in a tooltip. */
+function tradeCosts(t) {
+  const total = (t.commission ?? 0) + (t.slippage ?? 0);
+  if (!total) return `<span class="muted">—</span>`;
+  return `<span title="${usd.format(t.commission ?? 0)} commission + ${usd.format(t.slippage ?? 0)} slippage">${usd.format(total)}</span>`;
+}
 
 async function loadPortfolios() {
   state.portfolios = await api("/api/portfolios");
@@ -138,11 +164,19 @@ $("#pf-tabs").addEventListener("keydown", (ev) => {
   switchPortfolio(Number(next.dataset.pf));
 });
 
+// Trading costs: the page shows slippage in %, the API takes basis points (1 bp = 0.01%).
+const toBps = (pctText) => Math.round((parseFloat(pctText) || 0) * 10000) / 100;
+const toPct = (bps) => String(+(bps / 100).toFixed(4));
+const feeOf = (text) => parseFloat(text) || 0;
+
 // New portfolio
 const newDlg = $("#pf-new-dlg");
 $("#pf-new").addEventListener("click", () => {
   $("#pf-new-name").value = "";
   $("#pf-new-cash").value = 100000;
+  $("#pf-new-fee").value = 0;
+  $("#pf-new-slip").value = 0;
+  newDlg.querySelector("details.costs").open = false;
   $("#pf-new-msg").textContent = "";
   newDlg.showModal();
   $("#pf-new-name").focus();
@@ -153,7 +187,12 @@ newDlg.querySelector("form").addEventListener("submit", async (ev) => {
   try {
     const created = await api("/api/portfolios", {
       method: "POST",
-      body: JSON.stringify({ name: $("#pf-new-name").value, startingCash: parseFloat($("#pf-new-cash").value) }),
+      body: JSON.stringify({
+        name: $("#pf-new-name").value,
+        startingCash: parseFloat($("#pf-new-cash").value),
+        commission: feeOf($("#pf-new-fee").value),
+        slippageBps: toBps($("#pf-new-slip").value),
+      }),
     });
     newDlg.close();
     await loadPortfolios();
@@ -164,12 +203,14 @@ newDlg.querySelector("form").addEventListener("submit", async (ev) => {
   }
 });
 
-// Rename or delete
+// Settings: name, trading costs, delete
 const manageDlg = $("#pf-manage-dlg");
 $("#pf-manage").addEventListener("click", () => {
   const cur = currentPortfolio();
   if (!cur) return;
   $("#pf-rename").value = cur.name;
+  $("#pf-fee").value = cur.commission ?? 0;
+  $("#pf-slip").value = toPct(cur.slippageBps ?? 0);
   $("#pf-manage-msg").textContent = "";
   const only = state.portfolios.length <= 1;
   $("#pf-delete").disabled = only;
@@ -184,9 +225,13 @@ manageDlg.querySelector("form").addEventListener("submit", async (ev) => {
   const cur = currentPortfolio();
   try {
     if (action === "rename") {
-      await api(`/api/portfolios/${cur.id}`, { method: "PATCH", body: JSON.stringify({ name: $("#pf-rename").value }) });
+      await api(`/api/portfolios/${cur.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name: $("#pf-rename").value, commission: feeOf($("#pf-fee").value), slippageBps: toBps($("#pf-slip").value) }),
+      });
       manageDlg.close();
       await loadPortfolios();
+      updateTicket(); // the order estimate uses the new costs
     } else {
       if (!confirm(`Delete “${cur.name}” with all its positions, trades, orders and history? This can't be undone.`)) return;
       await api(`/api/portfolios/${cur.id}`, { method: "DELETE" });
@@ -209,7 +254,7 @@ let loadSeq = 0;
 async function load() {
   const seq = ++loadSeq;
   try {
-    const [portfolio, trades, history, openOrders, closedOrders, watchlist, market, portfolios] = await Promise.all([
+    const [portfolio, trades, history, openOrders, closedOrders, watchlist, market, portfolios, performance, alerts] = await Promise.all([
       api("/api/portfolio"),
       api(tradesUrl()),
       api(`/api/history?range=${state.range}`).catch(() => null),
@@ -218,6 +263,8 @@ async function load() {
       api("/api/watchlist").catch(() => state.watchlist),
       api("/api/market").catch(() => state.market),
       api("/api/portfolios").catch(() => state.portfolios),
+      api("/api/performance").catch(() => null),
+      api("/api/alerts").catch(() => state.alerts),
     ]);
     if (seq !== loadSeq) return; // you switched portfolios while this was loading
     notifyClosedOrders(openOrders, closedOrders);
@@ -227,15 +274,19 @@ async function load() {
     state.watchlist = watchlist;
     state.market = market;
     state.portfolios = portfolios;
+    state.alerts = alerts;
     renderPortfolios();
     renderMarket();
     updateTicket();
     renderHistory();
     renderKpis(portfolio);
+    renderPerformance(performance);
     renderAllocation();
     renderHoldings(portfolio);
     renderOrders();
     renderWatchlist();
+    renderAlertHistory();
+    announceAlerts();
     renderTrades(trades);
     $("#updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
 
@@ -301,6 +352,7 @@ function connectStream() {
   stream.onerror = () => { state.live.open = false; renderLive(); }; // EventSource retries by itself
   stream.addEventListener("status", (e) => { state.live.upstream = JSON.parse(e.data).connected; renderLive(); });
   stream.addEventListener("prices", (e) => applyPrices(JSON.parse(e.data)));
+  stream.addEventListener("alerts", () => loadAlerts());
 }
 
 function disconnectStream() {
@@ -422,6 +474,78 @@ function renderKpis(p) {
   $("#k-cash").textContent = usd.format(p.cash);
   $("#k-unreal").innerHTML = pnl(p.unrealizedPnl);
   $("#k-real").innerHTML = pnl(p.realizedPnl);
+}
+
+// ---------- Performance ----------
+const dateFmt = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
+const dateYearFmt = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
+/** "Nov 5" this year, "Nov 5, 2025" otherwise. */
+const fmtDate = (iso) => {
+  const d = new Date(iso);
+  return (d.getFullYear() === new Date().getFullYear() ? dateFmt : dateYearFmt).format(d);
+};
+const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
+
+function stat(label, valueHtml, subHtml = "") {
+  return `<div class="stat"><div class="stat-label">${label}</div><div class="stat-value">${valueHtml}</div>${subHtml ? `<div class="stat-sub">${subHtml}</div>` : ""}</div>`;
+}
+const money = (v) => v == null ? "—" : `<span class="${tone(v)}">${signed(v)}</span>`;
+const pctFine = new Intl.NumberFormat("en-US", { style: "percent", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// API percentages are 0–100. Under 1% gets two decimals, so a small cost shows as −0.01% rather than −0.0%.
+const pctOf = (v) => v == null ? "" : signed(v / 100, v !== 0 && Math.abs(v) < 1 ? pctFine : pct);
+
+function renderPerformance(perf) {
+  const tradesEl = $("#perf-trades");
+  const ddEl = $("#perf-dd");
+  if (!perf) {
+    tradesEl.innerHTML = ddEl.innerHTML = `<div class="stats-empty">Couldn't load performance stats.</div>`;
+    $("#perf-since").textContent = "";
+    $("#perf-note").textContent = "";
+    return;
+  }
+  const t = perf.trades;
+  const d = perf.drawdown;
+  $("#perf-since").textContent = d.since ? `Since ${fmtDate(d.since)}` : "";
+
+  if (!t.closed) {
+    tradesEl.innerHTML = `<div class="stats-empty">These appear after your first sell. Each sell counts as one closed trade.</div>`;
+  } else {
+    const record = [plural(t.wins, "win"), plural(t.losses, "loss", "losses")];
+    if (t.breakeven) record.push(`${t.breakeven} even`);
+    tradesEl.innerHTML = [
+      stat("Win rate", t.winRate == null ? "—" : pct.format(t.winRate / 100), record.join(" · ")),
+      stat("Average win", money(t.avgWin), t.avgWinPercent == null ? "No winning sells yet" : `${pctOf(t.avgWinPercent)} on cost`),
+      stat("Average loss", money(t.avgLoss), t.avgLossPercent == null ? "No losing sells yet" : `${pctOf(t.avgLossPercent)} on cost`),
+      stat("Profit factor", t.profitFactor == null ? "—" : t.profitFactor.toFixed(2),
+        t.profitFactor == null ? "No losses yet" : `${usd.format(t.grossProfit)} won ÷ ${usd.format(t.grossLoss)} lost`),
+      stat("Per trade", money(t.expectancy), `Average across ${plural(t.closed, "sell")}`),
+      stat("Best sell", money(t.largestWin), t.largestWin == null ? "No winning sells yet" : "Largest single gain"),
+      stat("Worst sell", money(t.largestLoss), t.largestLoss == null ? "No losing sells yet" : "Largest single loss"),
+    ].join("");
+  }
+
+  // Trading costs, once there are any (or they're switched on), whether or not anything has been sold.
+  const c = perf.costs;
+  const { fee, bps } = costs();
+  if (c && (c.total > 0 || fee || bps)) {
+    const setting = [fee ? `${usd.format(fee)}/trade` : "", bps ? `${toPct(bps)}% slippage` : ""].filter(Boolean).join(" + ") || "now free";
+    tradesEl.insertAdjacentHTML("beforeend", stat("Trading costs", money(-c.total),
+      `${usd.format(c.commission)} commission + ${usd.format(c.slippage)} slippage over ${plural(c.fills, "trade")}<br>Set to ${esc(setting)}`));
+  }
+
+  const max = d.maxPercent > 0
+    ? stat("Largest drop", `<span class="down">${pctOf(-d.maxPercent)}</span>`,
+        `${signed(-d.maxAmount)} · ${fmtDate(d.peakAt)} to ${fmtDate(d.troughAt)}<br>${d.recoveredAt ? `Recovered ${fmtDate(d.recoveredAt)}` : "Not recovered yet"}`)
+    : stat("Largest drop", pct.format(0), "No drop from a high yet");
+  const current = d.highWater == null ? ""
+    : d.currentPercent > 0
+      ? stat("Below high", `<span class="down">${pctOf(-d.currentPercent)}</span>`, `${signed(-d.currentAmount)} under ${usd.format(d.highWater)} on ${fmtDate(d.highWaterAt)}`)
+      : stat("Below high", pct.format(0), `At the high of ${usd.format(d.highWater)}`);
+  ddEl.innerHTML = max + current;
+
+  const notes = ["Drawdown uses the saved value history, which only covers times Folio was running."];
+  if (!d.liveIncluded) notes.push("The current value is left out while some prices are stale.");
+  $("#perf-note").textContent = notes.join(" ");
 }
 
 // ---------- Value over time ----------
@@ -760,7 +884,7 @@ function renderHoldings(p) {
       <td class="num" data-f="day">${c.day}</td>
       <td class="num" data-f="unreal">${c.unreal}</td>
       <td class="num" data-f="weight">${c.weight}</td>
-      <td class="num"><button class="btn xs" data-trade="${esc(h.symbol)}" data-side="Buy">Buy</button> <button class="btn xs" data-trade="${esc(h.symbol)}" data-side="Sell" data-qty="${h.quantity}">Sell</button></td>
+      <td class="num"><button class="btn xs" data-trade="${esc(h.symbol)}" data-side="Buy">Buy</button> <button class="btn xs" data-trade="${esc(h.symbol)}" data-side="Sell" data-qty="${h.quantity}">Sell</button> <button class="btn xs ghost" type="button" data-split="${esc(h.symbol)}" title="Record a stock split">Split</button></td>
     </tr>`;
   }).join("");
 }
@@ -787,8 +911,67 @@ function openTicket(sym, sideName, qty = "") {
 }
 
 $("#holdings").addEventListener("click", (ev) => {
+  const split = ev.target.closest("[data-split]");
+  if (split) return openSplit(split.dataset.split);
   const btn = ev.target.closest("[data-trade]");
   if (btn) openTicket(btn.dataset.trade, btn.dataset.side, btn.dataset.qty || "");
+});
+
+// ---------- Stock splits ----------
+const splitDlg = $("#split-dlg");
+let splitSym = null;
+
+function splitRatio() {
+  return { to: Math.trunc(Number($("#split-to").value)), from: Math.trunc(Number($("#split-from").value)) };
+}
+
+function paintSplitPreview() {
+  const h = state.portfolio?.holdings.find((x) => x.symbol === splitSym);
+  const { to, from } = splitRatio();
+  const el = $("#split-preview");
+  if (!h || !(to >= 1 && from >= 1) || to === from) { el.textContent = ""; return; }
+  const qty = Math.floor((h.quantity * to / from) * 10000) / 10000;
+  el.textContent = `In this portfolio: ${shares.format(h.quantity)} shares at ${usd.format(h.avgCost)} become ${shares.format(qty)} at ${usd.format(h.avgCost * from / to)}.`;
+}
+
+async function openSplit(sym) {
+  splitSym = sym;
+  $("#split-sym").textContent = sym;
+  $("#split-to").value = 2;
+  $("#split-from").value = 1;
+  $("#split-msg").textContent = "";
+  $("#split-prev").textContent = "";
+  paintSplitPreview();
+  splitDlg.showModal();
+  $("#split-to").select();
+  // Applying the same split twice would adjust holdings twice, so show what's already recorded.
+  try {
+    const prev = await api(`/api/splits?symbol=${encodeURIComponent(sym)}`);
+    if (prev?.length && splitSym === sym) {
+      $("#split-prev").textContent = "Already recorded: " + prev.slice(0, 3)
+        .map((s) => `${s.to}-for-${s.from} on ${new Date(s.appliedAt).toLocaleDateString()}`).join(", ") + ".";
+    }
+  } catch { /* the list is only a hint */ }
+}
+
+$("#split-to").addEventListener("input", paintSplitPreview);
+$("#split-from").addEventListener("input", paintSplitPreview);
+
+splitDlg.querySelector("form").addEventListener("submit", async (ev) => {
+  if (ev.submitter?.value !== "ok") return;
+  ev.preventDefault(); // stay open until the server accepts it
+  const { to, from } = splitRatio();
+  try {
+    const r = await api("/api/splits", { method: "POST", body: JSON.stringify({ symbol: splitSym, from, to }) });
+    splitDlg.close();
+    const parts = [`${r.positions} holding${r.positions === 1 ? "" : "s"}`];
+    if (r.orders) parts.push(`${r.orders} open order${r.orders === 1 ? "" : "s"}`);
+    if (r.ordersCancelled) parts.push(`${r.ordersCancelled} order${r.ordersCancelled === 1 ? "" : "s"} cancelled`);
+    toast(`Applied ${r.to}-for-${r.from} split to ${r.symbol}: ${parts.join(", ")}.`);
+    await load();
+  } catch (e) {
+    $("#split-msg").textContent = e.message;
+  }
 });
 
 // ---------- Trade history (paged on the server) ----------
@@ -829,7 +1012,7 @@ function renderTrades(page) {
 
   const tbody = $("#trades");
   if (!trades.length) {
-    tbody.innerHTML = `<tr class="empty"><td colspan="7">No trades yet.</td></tr>`;
+    tbody.innerHTML = `<tr class="empty"><td colspan="8">No trades yet.</td></tr>`;
     return;
   }
   tbody.innerHTML = trades.map((t) => `
@@ -840,6 +1023,7 @@ function renderTrades(page) {
       <td class="num">${shares.format(t.quantity)}</td>
       <td class="num">${usd.format(t.price)}</td>
       <td class="num">${usd.format(t.quantity * t.price)}</td>
+      <td class="num">${tradeCosts(t)}</td>
       <td class="num">${t.realizedPnl == null ? `<span class="muted">—</span>` : pnl(t.realizedPnl)}</td>
     </tr>`).join("");
 }
@@ -967,6 +1151,136 @@ function orderCells(o) {
   };
 }
 
+// ---------- Price alerts ----------
+const BELL = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>`;
+const alertsFor = (sym) => state.alerts.active.filter((a) => a.symbol === sym);
+const alertText = (a) => `Alert when ${a.symbol} ${a.direction === "Above" ? "rises" : "falls"} to ${usd.format(a.price)}`;
+const announced = new Set(); // ids this tab has already shown, while the server catches up
+
+async function loadAlerts() {
+  try {
+    state.alerts = await api("/api/alerts");
+  } catch {
+    return; // keep what we have; the next refresh retries
+  }
+  renderWatchlist();
+  renderAlertHistory();
+  if (alertDlg.open) renderAlertDialog();
+  announceAlerts();
+}
+
+/** Shows alerts that fired since you last looked (including while the page was closed), once each. */
+function announceAlerts() {
+  const fresh = state.alerts.triggered.filter((a) => !a.seen && !announced.has(a.id));
+  if (!fresh.length) return;
+  fresh.forEach((a) => announced.add(a.id));
+  const lines = fresh.map((a) =>
+    `${a.symbol} ${a.direction === "Above" ? "rose" : "fell"} to ${usd.format(a.triggerPrice)} (your alert at ${usd.format(a.price)}).`);
+  toast(lines.join(" "));
+  // A system notification too when you're in another tab or app and have allowed them.
+  if (document.hidden && typeof Notification !== "undefined" && Notification.permission === "granted") {
+    for (const [i, a] of fresh.slice(0, 3).entries()) {
+      try { new Notification(`${a.symbol} price alert`, { body: lines[i], tag: `folio-alert-${a.id}` }); } catch { /* not supported here */ }
+    }
+  }
+  api("/api/alerts/seen", { method: "POST", body: JSON.stringify({ ids: fresh.map((a) => a.id) }) }).catch(() => { /* shown again next load at worst */ });
+}
+
+function renderAlertHistory() {
+  const box = $("#alert-history");
+  const items = state.alerts.triggered;
+  box.hidden = !items.length;
+  $("#alert-history-list").innerHTML = items.slice(0, 8).map((a) => `
+    <li class="${a.seen ? "" : "new"}">
+      <span><span class="${a.direction === "Above" ? "up" : "down"}">${a.direction === "Above" ? "▲" : "▼"}</span> ${esc(a.symbol)} ${a.direction === "Above" ? "rose" : "fell"} to ${usd.format(a.triggerPrice)} <span class="muted">· alert at ${usd.format(a.price)}</span></span>
+      <span class="when">${timeFmt.format(new Date(a.triggeredAt))}</span>
+    </li>`).join("");
+}
+
+$("#alert-clear").addEventListener("click", async () => {
+  try {
+    await api("/api/alerts/triggered", { method: "DELETE" });
+    state.alerts.triggered = [];
+    renderAlertHistory();
+  } catch (e) {
+    toast(e.message);
+  }
+});
+
+const alertDlg = $("#alert-dlg");
+let alertSym = null;
+
+function alertCurrentPrice() {
+  return state.watchlist.find((w) => w.symbol === alertSym)?.price ?? null;
+}
+
+function renderAlertDialog() {
+  const now = alertCurrentPrice();
+  $("#alert-now").textContent = now == null
+    ? "No current price, so an alert can't be set right now."
+    : `Now ${usd.format(now)}. Folio tells you once, the first time a live price reaches your target. Alerts are checked while Folio is running.`;
+  paintAlertHint();
+  const list = alertsFor(alertSym);
+  $("#alert-list").innerHTML = list.map((a) => `
+    <li><span>${a.direction === "Above" ? "▲ Rises" : "▼ Falls"} to <b>${usd.format(a.price)}</b>${now ? ` <span class="muted">(${signed((a.price - now) / now, pct)})</span>` : ""}</span>
+      <button class="btn xs ghost" type="button" data-remove-alert="${a.id}">Remove</button></li>`).join("");
+}
+
+function paintAlertHint() {
+  const now = alertCurrentPrice();
+  const target = parseFloat($("#alert-price").value);
+  const el = $("#alert-hint");
+  if (!(target > 0) || now == null) { el.textContent = ""; return; }
+  if (target === now) { el.textContent = `That's the current price. Pick a price above or below ${usd.format(now)}.`; return; }
+  const up = target > now;
+  el.innerHTML = `Alert when ${esc(alertSym)} <b>${up ? "rises" : "falls"}</b> to ${usd.format(target)} <span class="${up ? "up" : "down"}">(${signed((target - now) / now, pct)})</span>.`;
+}
+
+function openAlerts(sym) {
+  alertSym = sym;
+  $("#alert-sym").textContent = sym;
+  $("#alert-price").value = "";
+  $("#alert-msg").textContent = "";
+  renderAlertDialog();
+  alertDlg.showModal();
+  $("#alert-price").focus();
+}
+
+$("#alert-price").addEventListener("input", paintAlertHint);
+
+alertDlg.querySelector("form").addEventListener("submit", async (ev) => {
+  if (ev.submitter && ev.submitter.value !== "ok") return; // Done
+  ev.preventDefault(); // stay open so you can add several
+  const price = parseFloat($("#alert-price").value);
+  if (!(price > 0)) { $("#alert-msg").textContent = "Enter a price above zero."; return; }
+  // Ask once, from this click, so alerts can reach you in other tabs too. Toasts work either way.
+  if (typeof Notification !== "undefined" && Notification.permission === "default") Notification.requestPermission().catch(() => {});
+  try {
+    await api("/api/alerts", { method: "POST", body: JSON.stringify({ symbol: alertSym, price }) });
+    $("#alert-price").value = "";
+    $("#alert-msg").textContent = "";
+    await loadAlerts();
+    $("#alert-price").focus();
+  } catch (e) {
+    $("#alert-msg").textContent = e.message;
+  }
+});
+
+$("#alert-list").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("[data-remove-alert]");
+  if (!btn) return;
+  btn.disabled = true;
+  try {
+    await api(`/api/alerts/${btn.dataset.removeAlert}`, { method: "DELETE" }).catch((e) => {
+      if (!/doesn't exist/.test(e.message)) throw e; // already gone (fired or removed elsewhere) is fine
+    });
+    await loadAlerts();
+  } catch (e) {
+    $("#alert-msg").textContent = e.message;
+    btn.disabled = false;
+  }
+});
+
 // ---------- Watchlist ----------
 const isWatched = (sym) => state.watchlist.some((w) => w.symbol === sym);
 
@@ -977,14 +1291,21 @@ function renderWatchlist() {
   if (!list.length) {
     tbody.innerHTML = `<tr class="empty"><td colspan="5">Nothing on your watchlist. Add a ticker above, or tap ☆ next to a quote in the order form.</td></tr>`;
   } else {
-    tbody.innerHTML = list.map((w) => `
+    tbody.innerHTML = list.map((w) => {
+      const alerts = alertsFor(w.symbol);
+      const chips = alerts.length
+        ? `<span class="alert-chips">${alerts.map((a) => `<span class="alert-chip" title="${esc(alertText(a))}">${a.direction === "Above" ? "▲" : "▼"} ${usd.format(a.price)}</span>`).join("")}</span>`
+        : "";
+      const bellLabel = alerts.length ? `Price alerts for ${w.symbol} (${alerts.length} set)` : `Set a price alert for ${w.symbol}`;
+      return `
     <tr data-sym="${esc(w.symbol)}">
-      <td><div class="sym-cell">${logo(w.symbol, w.logo)}<div class="sym-text"><button class="sym-link" type="button" data-trade="${esc(w.symbol)}" data-side="Buy" title="Open in order form">${esc(w.symbol)}</button>${w.stale ? `<span class="stale">${w.price == null ? "no quote" : "stale"}</span>` : ""}<span class="co">${esc(w.name || "")}</span></div></div></td>
+      <td><div class="sym-cell">${logo(w.symbol, w.logo)}<div class="sym-text"><button class="sym-link" type="button" data-trade="${esc(w.symbol)}" data-side="Buy" title="Open in order form">${esc(w.symbol)}</button>${w.stale ? `<span class="stale">${w.price == null ? "no quote" : "stale"}</span>` : ""}<span class="co">${esc(w.name || "")}</span>${chips}</div></div></td>
       <td class="num" data-f="price">${watchCells(w).price}</td>
       <td class="num" data-f="change">${watchCells(w).change}</td>
       <td class="num">${w.heldQuantity ? shares.format(w.heldQuantity) : `<span class="muted">—</span>`}</td>
-      <td class="num"><button class="btn xs" type="button" data-trade="${esc(w.symbol)}" data-side="Buy">Buy</button> <button class="btn xs icon" type="button" data-unwatch="${esc(w.symbol)}" aria-label="Remove ${esc(w.symbol)} from watchlist" title="Remove">✕</button></td>
-    </tr>`).join("");
+      <td class="num"><button class="btn xs" type="button" data-trade="${esc(w.symbol)}" data-side="Buy">Buy</button> <button class="btn xs bell${alerts.length ? " on" : ""}" type="button" data-alert="${esc(w.symbol)}" aria-label="${esc(bellLabel)}" title="${esc(bellLabel)}">${BELL}</button> <button class="btn xs icon" type="button" data-unwatch="${esc(w.symbol)}" aria-label="Remove ${esc(w.symbol)} from watchlist" title="Remove">✕</button></td>
+    </tr>`;
+    }).join("");
   }
   paintStar();
 }
@@ -1018,6 +1339,7 @@ async function removeFromWatchlist(sym) {
     if (!/isn't on your watchlist/.test(e.message)) throw e; // already gone is fine
   });
   state.watchlist = state.watchlist.filter((w) => w.symbol !== sym);
+  state.alerts.active = state.alerts.active.filter((a) => a.symbol !== sym); // removed with it on the server
   renderWatchlist();
 }
 
@@ -1039,6 +1361,8 @@ $("#watch-form").addEventListener("submit", async (ev) => {
 $("#watchlist").addEventListener("click", async (ev) => {
   const trade = ev.target.closest("[data-trade]");
   if (trade) return openTicket(trade.dataset.trade, trade.dataset.side);
+  const bell = ev.target.closest("[data-alert]");
+  if (bell) return openAlerts(bell.dataset.alert);
   const rm = ev.target.closest("[data-unwatch]");
   if (!rm) return;
   rm.disabled = true;
@@ -1128,7 +1452,20 @@ function updateTicket() {
   const q = state.quote;
   const qty = parseFloat($("#qty").value);
   const estPrice = resting ? limitPrice : q?.price;
-  $("#est").textContent = estPrice > 0 && qty > 0 ? usd.format(estPrice * qty) : "—";
+  const est = $("#est");
+  if (estPrice > 0 && qty > 0) {
+    // Same rules as the server: slippage against you, except a limit never fills past its price.
+    const { fee, bps } = costs();
+    const fill = type === "Limit" ? estPrice : estPrice * (s === "Buy" ? 1 + bps / 10000 : 1 - bps / 10000);
+    const slip = Math.abs(fill - estPrice) * qty;
+    const total = fill * qty + (s === "Buy" ? fee : -fee);
+    const parts = [];
+    if (fee) parts.push(`${usd.format(fee)} commission`);
+    if (slip >= 0.005) parts.push(`~${usd.format(slip)} slippage`);
+    est.innerHTML = usd.format(total) + (parts.length ? `<span class="est-costs">${s === "Buy" ? "incl." : "after"} ${parts.join(" + ")}</span>` : "");
+  } else {
+    est.textContent = "—";
+  }
 
   const held = q ? heldQty(q.symbol) : 0;
   $("#held").textContent = q
@@ -1144,9 +1481,11 @@ form.querySelector("[data-max]").addEventListener("click", () => {
   if (!q) return;
   const limitPrice = parseFloat($("#price").value);
   const price = otype() !== "Market" && limitPrice > 0 ? limitPrice : q.price;
+  const { fee, bps } = costs();
+  const fill = otype() === "Limit" ? price : price * (1 + bps / 10000);
   $("#qty").value = side() === "Sell"
     ? heldQty(q.symbol)
-    : Math.floor((state.portfolio?.cash ?? 0) / price);
+    : Math.max(0, Math.floor(((state.portfolio?.cash ?? 0) - fee) / fill));
   updateTicket();
 });
 

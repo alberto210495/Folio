@@ -29,6 +29,9 @@ namespace Folio.Data.Migrations
                     b.Property<decimal>("Cash")
                         .HasColumnType("TEXT");
 
+                    b.Property<decimal>("Commission")
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("TEXT");
 
@@ -38,6 +41,9 @@ namespace Folio.Data.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<decimal>("RealizedPnl")
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal>("SlippageBps")
                         .HasColumnType("TEXT");
 
                     b.Property<decimal>("StartingCash")
@@ -190,6 +196,71 @@ namespace Folio.Data.Migrations
                     b.ToTable("Positions");
                 });
 
+            modelBuilder.Entity("Folio.Data.PriceAlert", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Direction")
+                        .IsRequired()
+                        .HasMaxLength(5)
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal>("Price")
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("Seen")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Symbol")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal?>("TriggerPrice")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("TriggeredAt")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TriggeredAt", "Symbol");
+
+                    b.ToTable("Alerts");
+                });
+
+            modelBuilder.Entity("Folio.Data.StockSplit", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("AppliedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("From")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Symbol")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("To")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Symbol", "AppliedAt");
+
+                    b.ToTable("Splits");
+                });
+
             modelBuilder.Entity("Folio.Data.Trade", b =>
                 {
                     b.Property<int>("Id")
@@ -198,6 +269,9 @@ namespace Folio.Data.Migrations
 
                     b.Property<int>("AccountId")
                         .HasColumnType("INTEGER");
+
+                    b.Property<decimal>("Commission")
+                        .HasColumnType("TEXT");
 
                     b.Property<DateTime>("ExecutedAt")
                         .HasColumnType("TEXT");
@@ -217,6 +291,9 @@ namespace Folio.Data.Migrations
                     b.Property<string>("Side")
                         .IsRequired()
                         .HasMaxLength(4)
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal>("Slippage")
                         .HasColumnType("TEXT");
 
                     b.Property<string>("Symbol")
