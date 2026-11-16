@@ -17,6 +17,12 @@ public class FolioOptions
     /// Turn off to trade around the clock on the last known price.
     /// </summary>
     public bool EnforceMarketHours { get; set; } = true;
+
+    /// <summary>Folder for automatic database backups, relative to the app folder.</summary>
+    public string BackupDirectory { get; set; } = "backups";
+
+    /// <summary>How many backups to keep; older ones are deleted.</summary>
+    public int BackupKeep { get; set; } = 14;
 }
 
 /// <param name="T">Time (UTC).</param>
@@ -108,8 +114,9 @@ public class SnapshotService(FolioDb db, PortfolioService portfolio, FinnhubClie
             .Select(r => new HistoryPoint(r.TakenAt, r.TotalValue, BenchmarkValue(account.StartingCash, basePrice, r.BenchmarkPrice)))
             .ToList();
 
-        // The account's opening balance anchors both lines at their true start.
-        if (since is null || account.CreatedAt >= since)
+        // The account's opening balance anchors both lines at their true start. Skipped if snapshots are older
+        // than the account (possible with imported history), so the points stay in time order for Downsample.
+        if ((since is null || account.CreatedAt >= since) && (points.Count == 0 || account.CreatedAt <= points[0].T))
             points.Insert(0, new HistoryPoint(account.CreatedAt, account.StartingCash, basePrice is null ? null : account.StartingCash));
 
         var now = await BenchmarkPriceAsync(ct);
