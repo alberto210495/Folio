@@ -1,0 +1,28 @@
+# Weekly pull requests for package and GitHub Actions updates. CI and CodeQL run on each one.
+version: 2
+updates:
+  - package-ecosystem: nuget
+    directories: ["/", "/tests/Folio.Tests"]
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for routine minor/patch updates instead of one per package.
+      minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # Version 11 of these needs .NET 11; Folio targets .NET 10, so only take 10.x patches.
+      - dependency-name: "Microsoft.EntityFrameworkCore*"
+        update-types: [version-update:semver-major]
+      - dependency-name: "Microsoft.AspNetCore.*"
+        update-types: [version-update:semver-major]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
