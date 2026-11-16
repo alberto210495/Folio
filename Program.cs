@@ -6,6 +6,14 @@ using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Small attack surface: no server banner, small request bodies (the largest real request is a few hundred bytes).
+builder.WebHost.ConfigureKestrel(k =>
+{
+    k.AddServerHeader = false;
+    k.Limits.MaxRequestBodySize = 64 * 1024;
+    k.Limits.MaxRequestHeadersTotalSize = 32 * 1024;
+});
+
 builder.Services.AddDbContext<FolioDb>(o =>
     o.UseSqlite(builder.Configuration.GetConnectionString("Folio") ?? "Data Source=folio.db"));
 
@@ -55,7 +63,7 @@ app.UseExceptionHandler(errApp => errApp.Run(async ctx =>
         PortfolioNotFoundException e => (404, e.Message),
         FinnhubException { Status: HttpStatusCode.TooManyRequests } e => (429, e.Message),
         FinnhubException e => (503, e.Message),
-        BadHttpRequestException e => (400, e.Message),
+        BadHttpRequestException e => (e.StatusCode, e.Message), // e.g. 413 for an oversized body
         _ => (500, "Something went wrong."),
     };
     ctx.Response.StatusCode = status;
@@ -71,6 +79,12 @@ using (var scope = app.Services.CreateScope())
     if (!scope.ServiceProvider.GetRequiredService<FinnhubClient>().IsConfigured)
         app.Logger.LogWarning("Finnhub:ApiKey is not set. Quotes and trading are disabled until you add one (see README).");
 }
+
+// Security (see README): headers on every response, HTTPS only, and no API calls from other websites.
+// Kestrel listens on localhost only and AllowedHosts rejects other host names (DNS rebinding); both in appsettings.json.
+app.UseSecurityHeaders();
+app.UseHttpsRedirection();
+app.UseCrossSiteGuard();
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
@@ -238,3 +252,6 @@ app.Run();
 record ResetRequest(decimal StartingCash);
 
 record MarkSeenRequest(int[]? Ids);
+
+/// <summary>Lets the integration tests host the app with WebApplicationFactory.</summary>
+public partial class Program;

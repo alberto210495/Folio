@@ -14,7 +14,12 @@ Paper-trading portfolio tracker. Buy and sell real tickers with fake money at li
    ```
 
    Or use an environment variable: `Finnhub__ApiKey=<your-key>`.
-3. `dotnet run`, then open the URL it prints.
+3. Trust the local HTTPS certificate once (Windows asks you to confirm):
+
+   ```sh
+   dotnet dev-certs https --trust
+   ```
+4. `dotnet run`, then open <https://localhost:7245>. Plain <http://localhost:5231> redirects there.
 
 The SQLite file `folio.db` is created on first run with one portfolio, "My portfolio", holding $100,000. Use **Reset portfolio** to start it over with any amount, or **+ New** to add another.
 
@@ -91,15 +96,29 @@ Portfolio-specific endpoints (portfolio, trades, orders, history, exports, reset
 
 Errors return `{ "error": "..." }`: 400 for rejected orders, 404 for an unknown portfolio, 429 or 503 for Finnhub problems.
 
+## Security
+
+Folio is built to run on your own computer for one person. It has no login, so these protections keep everything else out:
+
+- **Only this computer can connect.** Kestrel listens on `localhost` (127.0.0.1 and ::1) only, set in `appsettings.json` under `Kestrel:Endpoints`. Other devices on your network can't reach it.
+- **HTTPS (against eavesdropping and tampering).** The page and API are served over HTTPS, and plain HTTP redirects to it. Calls to Finnhub use HTTPS and WSS, with normal certificate checks. Your API key stays on the server and never reaches the browser. HSTS is not sent: browsers ignore it for `localhost`, and pinning `localhost` to HTTPS would break your other local projects.
+- **Other websites can't use Folio through your browser.** API requests labelled by the browser as coming from another site (`Sec-Fetch-Site` other than `same-origin`), or writes with a foreign `Origin`, get 403. This stops cross-site request forgery and pages reading your portfolio. Command-line tools like curl still work.
+- **DNS rebinding is blocked.** A malicious domain that re-points itself at 127.0.0.1 still sends its own host name, and `AllowedHosts` only accepts `localhost`, `127.0.0.1` and `[::1]`.
+- **Script injection (XSS).** A strict Content Security Policy allows scripts only from Folio itself: no inline scripts and no `eval`. Images come from Folio and Finnhub's logo host, and Folio can't be framed. Everything from the server is inserted as text (`esc()`, `textContent`), and the API only returns JSON.
+- **SQL injection.** Every query goes through EF Core LINQ, which always sends values as parameters. The only raw SQL is a constant statement in one migration. Tickers must match `A–Z`, `0–9`, `.` and `-`, and ids must be numbers.
+- **Smaller attack surface.** Request bodies are limited to 64 KB and headers to 32 KB. There's no `Server` banner, errors never include stack traces, and API responses aren't cached. Other headers: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cross-Origin-Opener-Policy` and `-Resource-Policy: same-origin`, and a `Permissions-Policy` denying camera, microphone, location, payment and USB.
+
+If you ever want Folio reachable from other devices, it needs a login first; these protections assume nobody else can connect.
+
 ## Tests
 
 ```sh
 dotnet test Folio.slnx
 ```
 
-xUnit tests in `tests/Folio.Tests` cover multiple portfolios (separation of cash, holdings, orders and history; fills into the right portfolio; reset; validation; deletion), trading (average cost, realized P&L, rounding, rejections, invalid sides), stock splits (forward and reverse, every portfolio, open orders, fractions, validation), timestamps from the app clock, company profile refresh, performance stats (win rate, averages, profit factor, drawdown and recovery), trading costs (fill prices, limit caps, cost basis, cash checks, settings), price alerts (direction, refusals, firing once, market hours, history, watchlist removal, splits, the stream event), live prices (merging ticks into quotes, message parsing, subscriptions, the event stream, tick-triggered fills), market hours (NYSE holidays, early closes, daylight saving, closed-market trading), limit and stop orders (trigger rules, fills, commitments, cancels, stale prices), company profiles and logos, the watchlist, trade history paging, CSV export (quoting, formula escaping, locale), reset, valuation, snapshots and the benchmark maths. They use a fake Finnhub and an in-memory SQLite database with the real migrations, so they need neither an API key nor a network connection. One optional test connects to the real Finnhub websocket when a `FINNHUB_KEY` environment variable is set; it streams a crypto pair, so it works even when US markets are closed.
+xUnit tests in `tests/Folio.Tests` cover security (headers, HTTPS redirect, foreign host names, cross-site requests and origins, injection attempts, error output; run against the real app pipeline), multiple portfolios (separation of cash, holdings, orders and history; fills into the right portfolio; reset; validation; deletion), trading (average cost, realized P&L, rounding, rejections, invalid sides), stock splits (forward and reverse, every portfolio, open orders, fractions, validation), timestamps from the app clock, company profile refresh, performance stats (win rate, averages, profit factor, drawdown and recovery), trading costs (fill prices, limit caps, cost basis, cash checks, settings), price alerts (direction, refusals, firing once, market hours, history, watchlist removal, splits, the stream event), live prices (merging ticks into quotes, message parsing, subscriptions, the event stream, tick-triggered fills), market hours (NYSE holidays, early closes, daylight saving, closed-market trading), limit and stop orders (trigger rules, fills, commitments, cancels, stale prices), company profiles and logos, the watchlist, trade history paging, CSV export (quoting, formula escaping, locale), reset, valuation, snapshots and the benchmark maths. They use a fake Finnhub and an in-memory SQLite database with the real migrations, so they need neither an API key nor a network connection. One optional test connects to the real Finnhub websocket when a `FINNHUB_KEY` environment variable is set; it streams a crypto pair, so it works even when US markets are closed.
 
 ## Notes
 
 - The schema is managed by EF Core migrations (in `Data/Migrations`) and applied automatically at startup. After changing an entity, run `dotnet tool restore` once, then `dotnet dotnet-ef migrations add <Name> -o Data/Migrations`.
-- Single user, no auth. Intended to run locally.
+- Single user, no login. Intended to run locally; see Security.
