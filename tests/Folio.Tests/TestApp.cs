@@ -104,6 +104,8 @@ public sealed class TestApp : IDisposable
         public TradeHistoryService History { get; }
         public ExportService Export { get; }
         public PortfoliosService Portfolios { get; }
+        public PerformanceService Performance { get; }
+        public AlertService Alerts { get; }
 
         internal Scope(TestApp app, int portfolioId)
         {
@@ -117,14 +119,16 @@ public sealed class TestApp : IDisposable
                 app.Live,
                 NullLogger<FinnhubClient>.Instance);
             var clock = new MarketClock(app.Time, Options.Create(app.Settings));
-            Trading = new TradingService(Db, Finnhub, clock, Context, NullLogger<TradingService>.Instance);
-            Portfolio = new PortfolioService(Db, Finnhub, Context);
-            Snapshots = new SnapshotService(Db, Portfolio, Finnhub, Context, Options.Create(new FolioOptions()));
-            Orders = new OrderService(Db, Trading, Finnhub, clock, Context, NullLogger<OrderService>.Instance);
-            Watchlist = new WatchlistService(Db, Finnhub, Trading, Context);
+            Trading = new TradingService(Db, Finnhub, clock, Context, app.Time, NullLogger<TradingService>.Instance);
+            Portfolio = new PortfolioService(Db, Finnhub, Context, app.Time);
+            Snapshots = new SnapshotService(Db, Portfolio, Finnhub, Context, Options.Create(new FolioOptions()), app.Time);
+            Orders = new OrderService(Db, Trading, Finnhub, clock, Context, app.Time, NullLogger<OrderService>.Instance);
+            Watchlist = new WatchlistService(Db, Finnhub, Trading, Context, app.Time);
             History = new TradeHistoryService(Db, Context);
-            Export = new ExportService(Db, Portfolio, Context);
-            Portfolios = new PortfoliosService(Db, Portfolio);
+            Export = new ExportService(Db, Portfolio, Context, app.Time);
+            Portfolios = new PortfoliosService(Db, Portfolio, app.Time);
+            Performance = new PerformanceService(Db, Portfolio, Context, app.Time);
+            Alerts = new AlertService(Db, Finnhub, clock, app.Time, NullLogger<AlertService>.Instance);
         }
 
         public Task<OrderView> Place(string symbol, TradeSide side, OrderType type, decimal qty, decimal price) =>

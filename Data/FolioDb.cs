@@ -14,6 +14,8 @@ public class FolioDb(DbContextOptions<FolioDb> options) : DbContext(options)
     public DbSet<PortfolioSnapshot> Snapshots => Set<PortfolioSnapshot>();
     public DbSet<Order> Orders => Set<Order>();
     public DbSet<WatchlistItem> Watchlist => Set<WatchlistItem>();
+    public DbSet<StockSplit> Splits => Set<StockSplit>();
+    public DbSet<PriceAlert> Alerts => Set<PriceAlert>();
 
     // SQLite has no timezone-aware type; everything is stored as UTC, so mark it UTC on the way out.
     protected override void ConfigureConventions(ModelConfigurationBuilder c) =>
@@ -56,6 +58,13 @@ public class FolioDb(DbContextOptions<FolioDb> options) : DbContext(options)
         b.Entity<WatchlistItem>().HasKey(w => w.Symbol);
         b.Entity<WatchlistItem>().Property(w => w.Symbol).HasMaxLength(20);
         b.Entity<WatchlistItem>().HasIndex(w => w.AddedAt);
+
+        b.Entity<StockSplit>().Property(s => s.Symbol).HasMaxLength(20);
+        b.Entity<StockSplit>().HasIndex(s => new { s.Symbol, s.AppliedAt });
+
+        b.Entity<PriceAlert>().Property(a => a.Symbol).HasMaxLength(20);
+        b.Entity<PriceAlert>().Property(a => a.Direction).HasConversion<string>().HasMaxLength(5);
+        b.Entity<PriceAlert>().HasIndex(a => new { a.TriggeredAt, a.Symbol });
     }
 
     /// <summary>The portfolio with this id (tracked), or <see cref="PortfolioNotFoundException"/>.</summary>

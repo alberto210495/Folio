@@ -27,8 +27,10 @@ public record HistoryPoint(DateTime T, decimal V, decimal? B);
 public record HistoryView(decimal StartingCash, string BenchmarkSymbol, decimal? BenchmarkNow, IReadOnlyList<HistoryPoint> Points);
 
 /// <summary>Records and serves account-value snapshots for the value-over-time chart.</summary>
-public class SnapshotService(FolioDb db, PortfolioService portfolio, FinnhubClient finnhub, PortfolioContext current, IOptions<FolioOptions> options)
+public class SnapshotService(FolioDb db, PortfolioService portfolio, FinnhubClient finnhub, PortfolioContext current, IOptions<FolioOptions> options, TimeProvider time)
 {
+    private DateTime Now => time.GetUtcNow().UtcDateTime;
+
     private const int MaxPoints = 400;
     private readonly string _benchmark = options.Value.BenchmarkSymbol;
 
@@ -61,13 +63,14 @@ public class SnapshotService(FolioDb db, PortfolioService portfolio, FinnhubClie
         var unchanged = last is not null
             && last.TotalValue == view.TotalValue
             && last.BenchmarkPrice == bench
-            && DateTime.UtcNow - last.TakenAt < TimeSpan.FromDays(1);
+            && Now - last.TakenAt < TimeSpan.FromDays(1);
 
         if (!unchanged)
         {
             db.Snapshots.Add(new PortfolioSnapshot
             {
                 AccountId = accountId,
+                TakenAt = Now,
                 TotalValue = view.TotalValue,
                 Cash = view.Cash,
                 HoldingsValue = view.HoldingsValue,
@@ -78,20 +81,20 @@ public class SnapshotService(FolioDb db, PortfolioService portfolio, FinnhubClie
         return !unchanged;
     }
 
-    public static DateTime? RangeStart(string? range) => (range ?? "1M").ToUpperInvariant() switch
+    public static DateTime? RangeStart(string? range, DateTime now) => (range ?? "1M").ToUpperInvariant() switch
     {
-        "1D" => DateTime.UtcNow.AddDays(-1),
-        "1W" => DateTime.UtcNow.AddDays(-7),
-        "1M" => DateTime.UtcNow.AddMonths(-1),
-        "3M" => DateTime.UtcNow.AddMonths(-3),
-        "1Y" => DateTime.UtcNow.AddYears(-1),
+        "1D" => now.AddDays(-1),
+        "1W" => now.AddDays(-7),
+        "1M" => now.AddMonths(-1),
+        "3M" => now.AddMonths(-3),
+        "1Y" => now.AddYears(-1),
         "ALL" => null,
         _ => throw new TradeRejectedException("Range must be one of 1D, 1W, 1M, 3M, 1Y, ALL."),
     };
 
     public async Task<HistoryView> GetHistoryAsync(string? range, CancellationToken ct = default)
     {
-        var since = RangeStart(range);
+        var since = RangeStart(range, Now);
         var account = await db.GetAccountAsync(current.Id, ct);
         var basePrice = account.BenchmarkStartPrice;
 
@@ -166,7 +169,11 @@ public class SnapshotWorker(IServiceScopeFactory scopes, ILogger<SnapshotWorker>
                 using var scope = scopes.CreateScope();
                 var finnhub = scope.ServiceProvider.GetRequiredService<FinnhubClient>();
                 if (finnhub.IsConfigured)
+                {
                     await scope.ServiceProvider.GetRequiredService<SnapshotService>().RecordAllAsync(stoppingToken);
+                    // A few per run keeps this well inside Finnhub's rate limit.
+                    await scope.ServiceProvider.GetRequiredService<TradingService>().RefreshStaleCompaniesAsync(5, stoppingToken);
+                }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

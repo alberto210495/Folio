@@ -18,15 +18,20 @@ public class PortfolioContext
     }
 }
 
+/// <param name="Commission">Dollars charged per fill.</param>
+/// <param name="SlippageBps">Basis points (0.01%) added to buys and taken off sells.</param>
 public record PortfolioSummary(int Id, string Name, decimal StartingCash, decimal Cash, decimal TotalValue, decimal TotalReturn,
-    decimal TotalReturnPercent, int Holdings, DateTime CreatedAt);
+    decimal TotalReturnPercent, int Holdings, DateTime CreatedAt, decimal Commission = 0, decimal SlippageBps = 0);
 
-public record CreatePortfolioRequest(string Name, decimal StartingCash);
+/// <param name="Commission">Optional dollars per fill; 0 when left out.</param>
+/// <param name="SlippageBps">Optional basis points of slippage; 0 when left out.</param>
+public record CreatePortfolioRequest(string Name, decimal StartingCash, decimal? Commission = null, decimal? SlippageBps = null);
 
-public record RenamePortfolioRequest(string Name);
+/// <summary>Changes whichever fields are given. New costs apply to fills from now on.</summary>
+public record UpdatePortfolioRequest(string? Name = null, decimal? Commission = null, decimal? SlippageBps = null);
 
 /// <summary>Creates, renames, deletes and lists portfolios.</summary>
-public class PortfoliosService(FolioDb db, PortfolioService valuation)
+public class PortfoliosService(FolioDb db, PortfolioService valuation, TimeProvider time)
 {
     public const int MaxPortfolios = 20;
     public const int MaxNameLength = 40;
@@ -40,7 +45,8 @@ public class PortfoliosService(FolioDb db, PortfolioService valuation)
         foreach (var a in accounts)
         {
             var v = await valuation.GetAsync(a.Id, ct); // quotes are cached and shared across portfolios
-            list.Add(new(a.Id, a.Name, a.StartingCash, v.Cash, v.TotalValue, v.TotalReturn, v.TotalReturnPercent, v.Holdings.Count, a.CreatedAt));
+            list.Add(new(a.Id, a.Name, a.StartingCash, v.Cash, v.TotalValue, v.TotalReturn, v.TotalReturnPercent, v.Holdings.Count, a.CreatedAt,
+                a.Commission, a.SlippageBps));
         }
         return list;
     }
@@ -53,18 +59,47 @@ public class PortfoliosService(FolioDb db, PortfolioService valuation)
         if (await db.Accounts.CountAsync(ct) >= MaxPortfolios)
             throw new TradeRejectedException($"You can have up to {MaxPortfolios} portfolios. Delete one to add another.");
 
+        var commission = ValidCommission(req.Commission ?? 0);
+        var slippage = ValidSlippage(req.SlippageBps ?? 0);
+
         var cash = decimal.Round(req.StartingCash, 2, MidpointRounding.ToEven);
-        var account = new Account { Name = name, StartingCash = cash, Cash = cash };
+        var account = new Account
+        {
+            Name = name, StartingCash = cash, Cash = cash, CreatedAt = time.GetUtcNow().UtcDateTime,
+            Commission = commission, SlippageBps = slippage,
+        };
         db.Accounts.Add(account);
         await db.SaveChangesAsync(ct);
-        return new(account.Id, account.Name, cash, cash, cash, 0, 0, 0, account.CreatedAt);
+        return new(account.Id, account.Name, cash, cash, cash, 0, 0, 0, account.CreatedAt, commission, slippage);
     }
 
-    public async Task RenameAsync(int id, string? newName, CancellationToken ct = default)
+    public Task RenameAsync(int id, string? newName, CancellationToken ct = default) =>
+        UpdateAsync(id, new UpdatePortfolioRequest(Name: newName ?? ""), ct);
+
+    /// <summary>Renames and/or changes trading costs. Fields left null are kept.</summary>
+    public async Task UpdateAsync(int id, UpdatePortfolioRequest req, CancellationToken ct = default)
     {
         var account = await db.GetAccountAsync(id, ct);
-        account.Name = await ValidNameAsync(newName, exceptId: id, ct);
+        if (req.Name is not null) account.Name = await ValidNameAsync(req.Name, exceptId: id, ct);
+        if (req.Commission is { } c) account.Commission = ValidCommission(c);
+        if (req.SlippageBps is { } s) account.SlippageBps = ValidSlippage(s);
         await db.SaveChangesAsync(ct);
+    }
+
+    public static decimal ValidCommission(decimal v)
+    {
+        if (v is < 0 or > TradingService.MaxCommission)
+            throw new TradeRejectedException("Commission must be between $0 and $1,000 per trade.");
+        if (decimal.Round(v, 2) != v) throw new TradeRejectedException("Commission supports at most 2 decimal places (cents).");
+        return v;
+    }
+
+    public static decimal ValidSlippage(decimal bps)
+    {
+        if (bps is < 0 or > TradingService.MaxSlippageBps)
+            throw new TradeRejectedException($"Slippage must be between 0% and {TradingService.MaxSlippageBps / 100:0.##}%.");
+        if (decimal.Round(bps, 2) != bps) throw new TradeRejectedException("Slippage supports at most 0.0001% precision.");
+        return bps;
     }
 
     /// <summary>Deletes the portfolio and everything in it. The last portfolio can't be deleted.</summary>

@@ -13,7 +13,9 @@ public record TradeView(
     decimal? RealizedPnl,
     DateTime ExecutedAt,
     int? OrderId,
-    string OrderType);
+    string OrderType,
+    decimal Commission,
+    decimal Slippage);
 
 /// <param name="Page">1-based. Past-the-end requests are clamped to the last page.</param>
 /// <param name="Pages">At least 1, even with no trades.</param>
@@ -47,7 +49,8 @@ public class TradeHistoryService(FolioDb db, PortfolioContext portfolio)
 
         var items = trades.Select(t => new TradeView(
             t.Id, t.Symbol, t.Side, t.Quantity, t.Price, t.RealizedPnl, t.ExecutedAt, t.OrderId,
-            t.OrderId is int id && types.TryGetValue(id, out var type) ? type.ToString() : "Market")).ToList();
+            t.OrderId is int id && types.TryGetValue(id, out var type) ? type.ToString() : "Market",
+            t.Commission, t.Slippage)).ToList();
 
         return new TradePage(items, total, current, size, pages);
     }
