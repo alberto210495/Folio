@@ -153,5 +153,5 @@ public class SnapshotServiceTests : IDisposable
 
     [Fact]
     public void Unknown_range_is_rejected() =>
-        Assert.Throws<TradeRejectedException>(() => SnapshotService.RangeStart("5Y"));
+        Assert.Throws<TradeRejectedException>(() => SnapshotService.RangeStart("5Y", DateTime.UtcNow));
 }

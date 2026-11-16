@@ -11,6 +11,13 @@ public class Account
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     /// <summary>Benchmark (SPY) price when the account started; baseline for the comparison line.</summary>
     public decimal? BenchmarkStartPrice { get; set; }
+    /// <summary>Flat commission charged on every fill, in dollars. 0 = free trading.</summary>
+    public decimal Commission { get; set; }
+    /// <summary>
+    /// Simulated slippage in basis points (1 bp = 0.01%): buys fill this much above the market price, sells
+    /// this much below. Limit orders never fill past their limit.
+    /// </summary>
+    public decimal SlippageBps { get; set; }
 }
 
 /// <summary>An open holding. Removed when quantity reaches zero.</summary>
@@ -35,9 +42,14 @@ public class Trade
     public required string Symbol { get; set; }
     public TradeSide Side { get; set; }
     public decimal Quantity { get; set; }
+    /// <summary>The fill price, including any slippage.</summary>
     public decimal Price { get; set; }
-    /// <summary>Set on sells: (price - avg cost) × quantity.</summary>
+    /// <summary>Set on sells: (price − avg cost) × quantity − commission. A buy's commission is in its avg cost.</summary>
     public decimal? RealizedPnl { get; set; }
+    /// <summary>Commission paid on this fill.</summary>
+    public decimal Commission { get; set; }
+    /// <summary>What slippage cost on this fill: the gap between the market and fill prices × quantity.</summary>
+    public decimal Slippage { get; set; }
     /// <summary>The resting order this fill came from; null for market orders.</summary>
     public int? OrderId { get; set; }
     public DateTime ExecutedAt { get; set; } = DateTime.UtcNow;
@@ -90,6 +102,40 @@ public class Order
     public decimal? FillPrice { get; set; }
     /// <summary>Why the order was rejected at fill time (e.g. not enough cash by then).</summary>
     public string? Reason { get; set; }
+}
+
+/// <summary>
+/// A stock split you recorded: every <see cref="From"/> shares became <see cref="To"/> (4-for-1 is To 4, From 1;
+/// a 1-for-10 reverse split is To 1, From 10). Applied to every portfolio's holdings and open orders.
+/// </summary>
+public class StockSplit
+{
+    public int Id { get; set; }
+    public required string Symbol { get; set; }
+    public int From { get; set; }
+    public int To { get; set; }
+    public DateTime AppliedAt { get; set; } = DateTime.UtcNow;
+}
+
+public enum AlertDirection { Above, Below }
+
+/// <summary>
+/// "Tell me when NVDA rises to $130" (Above) or "falls to $110" (Below). Fires once, the first time a live
+/// price reaches the target, then stays as history. Shared by every portfolio, like the watchlist.
+/// </summary>
+public class PriceAlert
+{
+    public int Id { get; set; }
+    public required string Symbol { get; set; }
+    public AlertDirection Direction { get; set; }
+    public decimal Price { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    /// <summary>When it fired; null while it's still waiting.</summary>
+    public DateTime? TriggeredAt { get; set; }
+    /// <summary>The price that set it off.</summary>
+    public decimal? TriggerPrice { get; set; }
+    /// <summary>Whether the page has shown you this alert firing.</summary>
+    public bool Seen { get; set; }
 }
 
 /// <summary>A symbol you're following without holding it. Not account data, so a reset keeps it.</summary>

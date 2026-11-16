@@ -56,19 +56,20 @@ public sealed class Csv
 
 public record CsvFile(string FileName, string Content);
 
-public class ExportService(FolioDb db, PortfolioService portfolio, PortfolioContext current)
+public class ExportService(FolioDb db, PortfolioService portfolio, PortfolioContext current, TimeProvider time)
 {
     public async Task<CsvFile> TradesAsync(CancellationToken ct = default)
     {
         var trades = await db.Trades.AsNoTracking().Where(t => t.AccountId == current.Id).OrderBy(t => t.ExecutedAt).ThenBy(t => t.Id).ToListAsync(ct);
         var types = await db.Orders.AsNoTracking().Where(o => o.AccountId == current.Id).ToDictionaryAsync(o => o.Id, o => o.Type, ct);
 
-        var csv = new Csv("executed_at_utc", "side", "order_type", "symbol", "quantity", "price", "total", "realized_pnl", "order_id");
+        var csv = new Csv("executed_at_utc", "side", "order_type", "symbol", "quantity", "price", "total", "realized_pnl", "order_id",
+            "commission", "slippage");
         foreach (var t in trades)
         {
             var type = t.OrderId is int id && types.TryGetValue(id, out var ot) ? ot.ToString() : "Market";
             csv.Row(t.ExecutedAt, t.Side, type, t.Symbol, t.Quantity, t.Price,
-                decimal.Round(t.Quantity * t.Price, 2, MidpointRounding.ToEven), t.RealizedPnl, t.OrderId);
+                decimal.Round(t.Quantity * t.Price, 2, MidpointRounding.ToEven), t.RealizedPnl, t.OrderId, t.Commission, t.Slippage);
         }
         return new(await NameAsync("trades", ct), csv.ToString());
     }
@@ -106,7 +107,7 @@ public class ExportService(FolioDb db, PortfolioService portfolio, PortfolioCont
     {
         var name = await db.Accounts.Where(a => a.Id == current.Id).Select(a => a.Name).FirstOrDefaultAsync(ct) ?? "";
         var slug = Slug(name);
-        return $"folio-{(slug.Length > 0 ? slug + "-" : "")}{what}-{DateTime.UtcNow:yyyy-MM-dd}.csv";
+        return $"folio-{(slug.Length > 0 ? slug + "-" : "")}{what}-{time.GetUtcNow().UtcDateTime:yyyy-MM-dd}.csv";
     }
 
     public static string Slug(string name)

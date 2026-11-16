@@ -57,11 +57,11 @@ public class ExportServiceTests
         var lines = Lines(file);
 
         Assert.Matches(@"^folio-my-portfolio-trades-\d{4}-\d{2}-\d{2}\.csv$", file.FileName);
-        Assert.Equal("executed_at_utc,side,order_type,symbol,quantity,price,total,realized_pnl,order_id", lines[0]);
+        Assert.Equal("executed_at_utc,side,order_type,symbol,quantity,price,total,realized_pnl,order_id,commission,slippage", lines[0]);
         Assert.Equal(4, lines.Length);
-        Assert.Matches(@"Z,Buy,Market,AAPL,10,100,1000,,$", lines[1]);
-        Assert.Matches(@"Z,Sell,Market,AAPL,4,120,480,80,$", lines[2]);
-        Assert.Matches(@"Z,Sell,Limit,AAPL,2,120,240,40,\d+$", lines[3]);
+        Assert.Matches(@"Z,Buy,Market,AAPL,10,100,1000,,,0,0$", lines[1]);
+        Assert.Matches(@"Z,Sell,Market,AAPL,4,120,480,80,,0,0$", lines[2]);
+        Assert.Matches(@"Z,Sell,Limit,AAPL,2,120,240,40,\d+,0,0$", lines[3]);
     }
 
     [Fact]

@@ -34,7 +34,7 @@ public record PortfolioView(
     bool AnyStale,
     DateTime AsOf);
 
-public class PortfolioService(FolioDb db, FinnhubClient finnhub, PortfolioContext portfolio)
+public class PortfolioService(FolioDb db, FinnhubClient finnhub, PortfolioContext portfolio, TimeProvider time)
 {
     public Task<PortfolioView> GetAsync(CancellationToken ct = default) => GetAsync(portfolio.Id, ct);
 
@@ -101,7 +101,7 @@ public class PortfolioService(FolioDb db, FinnhubClient finnhub, PortfolioContex
             holdings.Sum(h => h.DayChange),
             holdings,
             holdings.Any(h => h.PriceStale),
-            DateTime.UtcNow);
+            time.GetUtcNow().UtcDateTime);
     }
 
     private static decimal Round(decimal v, int places = 2) => decimal.Round(v, places, MidpointRounding.ToEven);
