@@ -22,8 +22,17 @@ public record LiveTick(string Symbol, decimal Price, DateTimeOffset At);
 /// Ignore prints outside the regular session (the default). Off when <c>Folio:EnforceMarketHours</c> is
 /// off, so round-the-clock trading also gets extended-hours prices.
 /// </param>
-public class LivePrices(TimeProvider time, bool regularHoursOnly = true)
+public class LivePrices(TimeProvider time, bool regularHoursOnly = true, ILogger<LivePrices>? log = null)
 {
+    /// <summary>
+    /// A tick this far (20%) from the last good price is held back until a second tick confirms it.
+    /// Real moves that big (earnings gaps) get through a moment later; one-off bad prints never do.
+    /// </summary>
+    public const decimal MaxJump = 0.20m;
+    /// <summary>A confirming tick must be within 1% of the held one, and arrive within this window.</summary>
+    public const decimal ConfirmWithin = 0.01m;
+    public static readonly TimeSpan ConfirmFor = TimeSpan.FromMinutes(2);
+
     /// <summary>A stale REST quote counts as fresh again if a tick arrived within this window.</summary>
     public static readonly TimeSpan FreshFor = TimeSpan.FromMinutes(2);
     /// <summary>How long a symbol shown in the order form stays subscribed.</summary>
@@ -32,8 +41,14 @@ public class LivePrices(TimeProvider time, bool regularHoursOnly = true)
     private readonly ConcurrentDictionary<string, (LiveTick Tick, long Seq)> _ticks = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTimeOffset> _interest = new(StringComparer.OrdinalIgnoreCase);
     private readonly Channel<bool> _resync = Channel.CreateBounded<bool>(new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropWrite });
+    private readonly ConcurrentDictionary<string, decimal> _reference = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, LiveTick> _held = new(StringComparer.OrdinalIgnoreCase);
     private long _seq;
     private long _alertsVersion;
+    private long _rejected;
+
+    /// <summary>How many ticks were held back as implausible and never confirmed (for diagnostics).</summary>
+    public long RejectedTicks => Interlocked.Read(ref _rejected);
 
     /// <summary>True while the websocket to Finnhub is open.</summary>
     public bool Connected { get; set; }
@@ -46,8 +61,27 @@ public class LivePrices(TimeProvider time, bool regularHoursOnly = true)
     /// <summary>Whether a tick should move prices: always, or only when printed during regular hours.</summary>
     public bool Counts(LiveTick tick) => !regularHoursOnly || MarketHours.GetStatus(tick.At).IsOpen;
 
-    public void Record(LiveTick tick)
+    /// <summary>
+    /// Remembers a fresh REST price as the yardstick for a symbol's first streamed tick, so even that one
+    /// can't be wildly off.
+    /// </summary>
+    public void NoteQuote(Quote quote)
     {
+        if (!quote.Stale && quote.Price > 0) _reference[quote.Symbol] = quote.Price;
+    }
+
+    public static bool IsJump(decimal from, decimal to) => from > 0 && Math.Abs(to / from - 1) > MaxJump;
+
+    /// <summary>
+    /// Accepts a tick unless it's older than the current one, a duplicate, non-positive, or an unconfirmed
+    /// jump of more than <see cref="MaxJump"/> from the last good price. Returns whether it was accepted;
+    /// only accepted ticks raise <see cref="Ticked"/> (which drives order fills and price alerts).
+    /// </summary>
+    public bool Record(LiveTick tick)
+    {
+        if (tick.Price <= 0) return false;
+        if (!Plausible(tick)) return false;
+
         var accepted = false;
         _ticks.AddOrUpdate(tick.Symbol,
             _ => { accepted = true; return (tick, Interlocked.Increment(ref _seq)); },
@@ -58,6 +92,34 @@ public class LivePrices(TimeProvider time, bool regularHoursOnly = true)
                 return (tick, Interlocked.Increment(ref _seq));
             });
         if (accepted) Ticked?.Invoke(tick);
+        return accepted;
+    }
+
+    private bool Plausible(LiveTick tick)
+    {
+        var current = Get(tick.Symbol);
+        if (current is not null && tick.At < current.At) return true; // stale; Record ignores it anyway
+        var baseline = current?.Price ?? (_reference.TryGetValue(tick.Symbol, out var r) ? r : 0);
+        if (!IsJump(baseline, tick.Price))
+        {
+            if (_held.TryRemove(tick.Symbol, out _)) Interlocked.Increment(ref _rejected); // prices went back to normal: it was a bad print
+            return true;
+        }
+
+        // A second print near the held one, soon after, confirms a genuine move.
+        if (_held.TryGetValue(tick.Symbol, out var held)
+            && tick.At - held.At <= ConfirmFor
+            && Math.Abs(tick.Price / held.Price - 1) <= ConfirmWithin)
+        {
+            _held.TryRemove(tick.Symbol, out _);
+            log?.LogInformation("Accepted a {Change:P0} move in {Symbol} to {Price} after confirmation", tick.Price / baseline - 1, tick.Symbol, tick.Price);
+            return true;
+        }
+
+        if (_held.TryGetValue(tick.Symbol, out var previous)) Interlocked.Increment(ref _rejected); // the earlier one never got confirmed
+        _held[tick.Symbol] = tick;
+        log?.LogWarning("Holding back an implausible {Symbol} price {Price} ({Change:P0} from {Baseline}) until confirmed", tick.Symbol, tick.Price, tick.Price / baseline - 1, baseline);
+        return false;
     }
 
     public LiveTick? Get(string symbol) => _ticks.TryGetValue(symbol, out var e) ? e.Tick : null;
