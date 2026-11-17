@@ -10,9 +10,13 @@
   <!-- The test project lives under tests/; keep its files out of this project's build. -->
   <ItemGroup>
     <Compile Remove="tests/**" />
+    <Compile Remove="FolioTray/**" />
     <Content Remove="tests/**" />
+    <Content Remove="FolioTray/**" />
     <None Remove="tests/**" />
+    <None Remove="FolioTray/**" />
     <EmbeddedResource Remove="tests/**" />
+    <EmbeddedResource Remove="FolioTray/**" />
   </ItemGroup>
 
   <ItemGroup>
@@ -21,6 +25,7 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.15" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.15" />
   </ItemGroup>
 
 </Project>

@@ -4,12 +4,21 @@ using Folio.Data;
 using Folio.Services;
 using Microsoft.EntityFrameworkCore;
 
+// "Folio --decrypt-backup <file.enc> [output.db]" turns an encrypted off-PC backup copy back into a normal backup.
+if (args is ["--decrypt-backup", ..]) return DecryptBackupCommand(args);
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Your Finnhub key lives in user secrets on this PC; read them in every environment (the installed copy runs
 // as Production) except the test suite's, so tests never use your real key.
+// On Windows the key is kept encrypted (Windows data protection) and decrypted into memory here; a plain-text key
+// found in user secrets is encrypted on the spot (see ApiKeyStore).
+string? apiKeyNote = null;
 if (!builder.Environment.IsEnvironment("Testing"))
+{
     builder.Configuration.AddUserSecrets<Program>(optional: true);
+    apiKeyNote = ApiKeyStore.ProtectAndLoad(builder.Configuration, ApiKeyStore.SecretsPath());
+}
 
 // The installed copy keeps its data outside the program folder (Folio:DataDirectory, e.g. %LOCALAPPDATA%\Folio),
 // so reinstalling never touches it. Without it, folio.db sits next to the app as before.
@@ -23,6 +32,12 @@ if (!string.IsNullOrWhiteSpace(dataDir))
         builder.Configuration["Folio:BackupDirectory"] = Path.Combine(dataDir, "backups");
 }
 
+// A log file for the installed copy, which has no console: Folio:LogDirectory, or "logs" in the data folder.
+var logDir = builder.Configuration["Folio:LogDirectory"];
+if (string.IsNullOrWhiteSpace(logDir) && !string.IsNullOrWhiteSpace(dataDir)) logDir = Path.Combine(dataDir, "logs");
+if (!string.IsNullOrWhiteSpace(logDir))
+    builder.Logging.AddProvider(new FileLoggerProvider(Path.GetFullPath(Environment.ExpandEnvironmentVariables(logDir)), TimeProvider.System));
+
 // One Folio per database. Starting it again (the desktop shortcut) just opens the running one in the browser.
 var openBrowser = args.Contains("--open");
 var siteUrl = builder.Configuration["Kestrel:Endpoints:Https:Url"] ?? "https://localhost:7245";
@@ -31,11 +46,19 @@ var dbPath = Path.GetFullPath(new Microsoft.Data.Sqlite.SqliteConnectionStringBu
 var instanceName = "Local\\Folio-" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
     System.Text.Encoding.UTF8.GetBytes(dbPath.ToLowerInvariant())))[..16];
 using var instance = new Mutex(true, instanceName, out var firstInstance);
+// Local access key (see AccessKey): on by default for the installed copy (it has a data folder), off for development.
+var contentRoot = builder.Environment.ContentRootPath;
+var requireKey = builder.Configuration.GetValue<bool?>("Folio:RequireAccessKey") ?? !string.IsNullOrWhiteSpace(dataDir);
+var keyFile = builder.Configuration["Folio:AccessKeyFile"] is { Length: > 0 } configuredKeyFile
+    ? Path.GetFullPath(Environment.ExpandEnvironmentVariables(configuredKeyFile), contentRoot)
+    : Path.Combine(string.IsNullOrWhiteSpace(dataDir) ? contentRoot : dataDir, "access.key");
+
 if (!firstInstance)
 {
-    if (openBrowser) OpenBrowser(siteUrl);
-    return;
+    if (openBrowser) OpenBrowser(requireKey && AccessKey.TryLoad(keyFile) is { } existing ? existing.UnlockUrl(siteUrl) : siteUrl);
+    return 0;
 }
+var accessKey = requireKey ? AccessKey.LoadOrCreate(keyFile) : null;
 
 // Small attack surface: no server banner, small request bodies (the largest real request is a few hundred bytes).
 builder.WebHost.ConfigureKestrel(k =>
@@ -47,6 +70,9 @@ builder.WebHost.ConfigureKestrel(k =>
 
 builder.Services.AddDbContext<FolioDb>(o =>
     o.UseSqlite(builder.Configuration.GetConnectionString("Folio") ?? "Data Source=folio.db"));
+
+// Shut down within 10 s (the tray waits 15 s before ending Folio forcibly).
+builder.Services.Configure<HostOptions>(o => o.ShutdownTimeout = TimeSpan.FromSeconds(10));
 
 builder.Services.AddMemoryCache();
 builder.Services.Configure<FinnhubOptions>(builder.Configuration.GetSection("Finnhub"));
@@ -77,6 +103,13 @@ builder.Services.AddScoped<WatchlistService>();
 builder.Services.AddScoped<ExportService>();
 builder.Services.AddScoped<TradeHistoryService>();
 builder.Services.AddScoped<BackupService>();
+// Logos are fetched by Folio, never by your browser: https on finnhub.io only (checked in LogoService), no redirects.
+builder.Services.AddHttpClient(LogoService.HttpClientName, c =>
+{
+    c.Timeout = TimeSpan.FromSeconds(10);
+    c.MaxResponseContentBufferSize = LogoService.MaxBytes;
+}).ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false });
+builder.Services.AddScoped<LogoService>();
 builder.Services.AddHostedService<BackupWorker>();
 builder.Services.AddScoped<PerformanceService>();
 builder.Services.AddScoped<AlertService>();
@@ -118,6 +151,7 @@ using (var scope = app.Services.CreateScope())
 // Kestrel listens on localhost only and AllowedHosts rejects other host names (DNS rebinding); both in appsettings.json.
 app.UseSecurityHeaders();
 app.UseHttpsRedirection();
+if (accessKey is not null) app.UseAccessKey(accessKey);
 app.UseCrossSiteGuard();
 
 app.UseDefaultFiles();
@@ -143,6 +177,16 @@ api.AddEndpointFilter(async (ctx, next) =>
 api.MapGet("/backups", (BackupService b) => b.List());
 
 api.MapPost("/backups", async (BackupService b, CancellationToken ct) => Results.Created("/api/backups", await b.CreateAsync("manual", ct)));
+
+api.MapPost("/backups/passphrase", async (PassphraseRequest req, BackupService b, CancellationToken ct) => Results.Ok(await b.SetPassphraseAsync(req.Passphrase, ct)));
+
+// Company logos, served from Folio's cache (see LogoService).
+api.MapGet("/logo/{symbol}", async (string symbol, LogoService logos, HttpContext http, CancellationToken ct) =>
+{
+    if (await logos.GetAsync(symbol, ct) is not { } logo) return Results.NotFound();
+    http.Response.Headers.CacheControl = "private, max-age=86400";
+    return Results.File(logo.Bytes, logo.ContentType);
+});
 
 api.MapGet("/export/folio.json", async (BackupService b, Microsoft.Extensions.Options.IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions> json, TimeProvider time, CancellationToken ct) =>
 {
@@ -187,7 +231,14 @@ api.MapGet("/status", (FinnhubClient f, LivePrices live, Microsoft.Extensions.Op
 api.MapGet("/market", (MarketClock m) => m.Status());
 
 // Live prices for the page, pushed as server-sent events (see LivePrices.StreamAsync).
-api.MapGet("/stream", (LivePrices live, CancellationToken ct) => TypedResults.ServerSentEvents(live.StreamAsync(ct)));
+api.MapGet("/stream", (HttpContext http, LivePrices live, IHostApplicationLifetime lifetime) =>
+{
+    // End the stream when Folio shuts down, not only when the browser leaves: an open stream would
+    // otherwise hold up a clean shutdown until the timeout.
+    var stop = CancellationTokenSource.CreateLinkedTokenSource(http.RequestAborted, lifetime.ApplicationStopping);
+    http.Response.RegisterForDispose(stop);
+    return TypedResults.ServerSentEvents(live.StreamAsync(stop.Token));
+});
 
 api.MapGet("/portfolio", (PortfolioService p, CancellationToken ct) => p.GetAsync(ct));
 
@@ -303,8 +354,63 @@ api.MapGet("/search", async (string q, FinnhubClient f, CancellationToken ct) =>
     string.IsNullOrWhiteSpace(q) || q.Length > 30 ? Results.Ok(Array.Empty<SymbolMatch>()) : Results.Ok(await f.SearchAsync(q.Trim(), ct)));
 
 await app.StartAsync();
-if (openBrowser) OpenBrowser(siteUrl);
+app.Logger.LogInformation("Folio started on {Url} (database {Database})", siteUrl, dbPath);
+app.Lifetime.ApplicationStopping.Register(() => app.Logger.LogInformation("Folio is stopping"));
+
+// The tray icon asks for a clean shutdown by setting this per-process signal (Windows only; there's no console
+// to press Ctrl+C in). Anything in your Windows session could set it, which at worst stops Folio.
+RegisteredWaitHandle? stopWait = null;
+if (OperatingSystem.IsWindows())
+{
+    var stopSignal = new EventWaitHandle(false, EventResetMode.ManualReset, $@"Local\Folio-Stop-{Environment.ProcessId}");
+    stopWait = ThreadPool.RegisterWaitForSingleObject(stopSignal, (_, _) => app.Lifetime.StopApplication(), null, Timeout.Infinite, executeOnlyOnce: true);
+    app.Lifetime.ApplicationStopped.Register(() => { stopWait.Unregister(null); stopSignal.Dispose(); });
+}
+
+if (apiKeyNote is not null)
+    app.Logger.Log(apiKeyNote.Contains("couldn't", StringComparison.Ordinal) ? LogLevel.Warning : LogLevel.Information, "{Note}", apiKeyNote);
+if (openBrowser) OpenBrowser(accessKey?.UnlockUrl(siteUrl) ?? siteUrl);
 await app.WaitForShutdownAsync();
+return 0;
+
+static int DecryptBackupCommand(string[] args)
+{
+    if (args.Length < 2)
+    {
+        Console.Error.WriteLine("Usage: Folio --decrypt-backup <backup.db.enc> [output.db]");
+        return 2;
+    }
+    var input = Path.GetFullPath(args[1]);
+    var output = args.Length > 2 ? Path.GetFullPath(args[2])
+        : input.EndsWith(BackupEncryption.Extension, StringComparison.OrdinalIgnoreCase) ? input[..^BackupEncryption.Extension.Length] : input + ".db";
+    if (!File.Exists(input)) { Console.Error.WriteLine($"Not found: {input}"); return 2; }
+    if (File.Exists(output)) { Console.Error.WriteLine($"Won't overwrite existing file: {output}"); return 2; }
+
+    Console.Write("Passphrase: ");
+    var passphrase = new System.Text.StringBuilder();
+    if (Console.IsInputRedirected) passphrase.Append(Console.ReadLine());
+    else
+    {
+        for (var k = Console.ReadKey(intercept: true); k.Key != ConsoleKey.Enter; k = Console.ReadKey(intercept: true))
+        {
+            if (k.Key == ConsoleKey.Backspace) { if (passphrase.Length > 0) passphrase.Length--; }
+            else if (!char.IsControl(k.KeyChar)) passphrase.Append(k.KeyChar);
+        }
+    }
+    Console.WriteLine();
+    try
+    {
+        BackupService.DecryptFile(input, output, passphrase.ToString());
+        Console.WriteLine($"Decrypted to {output}");
+        Console.WriteLine("To restore it: stop Folio, copy it over folio.db (delete folio.db-wal and folio.db-shm), start Folio.");
+        return 0;
+    }
+    catch (System.Security.Cryptography.CryptographicException ex)
+    {
+        Console.Error.WriteLine(ex.Message);
+        return 1;
+    }
+}
 
 static void OpenBrowser(string url)
 {

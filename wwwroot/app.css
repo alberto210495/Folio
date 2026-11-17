@@ -344,6 +344,10 @@ details.costs p { margin: -4px 0 0; }
 .file-btn input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 .file-btn:focus-within { outline: 1px solid var(--accent); outline-offset: 2px; }
 
+.backup-enc { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin: 0 0 16px; }
+.backup-enc p { margin: 0 0 10px; }
+.backup-enc p:last-child { margin: 10px 0 0; }
+
 /* Stock split dialog */
 #split-dlg .dlg { max-width: 440px; }
 #split-dlg p:empty { display: none; }
