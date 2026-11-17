@@ -35,8 +35,60 @@ public sealed class BackupServiceTests : IDisposable
         try { Directory.Delete(_root, recursive: true); } catch (IOException) { }
     }
 
-    private BackupService Backups(TestApp.Scope s, int keep = 14) => new(
-        s.Db, Options.Create(new FolioOptions { BackupKeep = keep }), new Env(_root), _app.Time, NullLogger<BackupService>.Instance);
+    private BackupService Backups(TestApp.Scope s, int keep = 14, string copyTo = "") => new(
+        s.Db, Options.Create(new FolioOptions { BackupKeep = keep, CopyBackupsTo = copyTo }), new Env(_root), _app.Time, NullLogger<BackupService>.Instance);
+
+    [Fact]
+    public async Task Each_backup_is_copied_off_pc_and_old_copies_are_pruned_there()
+    {
+        var cloud = Path.Combine(_root, "OneDrive", "Folio backups");
+        using var s = _app.NewScope();
+        var backups = Backups(s, keep: 2, copyTo: cloud);
+        for (var i = 0; i < 3; i++)
+        {
+            await backups.CreateAsync();
+            _app.Time.Now = _app.Time.Now.AddMinutes(1);
+        }
+
+        var local = backups.List();
+        Assert.Equal(cloud, local.CopyTo);
+        Assert.Null(local.CopyError);
+        Assert.Equal(local.Backups.Select(b => b.Name).OrderBy(n => n), Directory.GetFiles(cloud).Select(Path.GetFileName).OrderBy(n => n));
+        Assert.Equal(2, Directory.GetFiles(cloud).Length);
+    }
+
+    [Fact]
+    public async Task Copy_folder_expands_environment_variables()
+    {
+        Environment.SetEnvironmentVariable("FOLIO_TEST_CLOUD", Path.Combine(_root, "cloud"));
+        try
+        {
+            using var s = _app.NewScope();
+            var backups = Backups(s, copyTo: "%FOLIO_TEST_CLOUD%" + Path.DirectorySeparatorChar + "Folio");
+            var info = await backups.CreateAsync();
+            Assert.True(File.Exists(Path.Combine(_root, "cloud", "Folio", info.Name)));
+        }
+        finally { Environment.SetEnvironmentVariable("FOLIO_TEST_CLOUD", null); }
+    }
+
+    [Fact]
+    public async Task A_failed_copy_keeps_the_local_backup_and_reports_the_problem()
+    {
+        var notAFolder = Path.Combine(_root, "blocked");
+        File.WriteAllText(notAFolder, "a file where the folder should be");
+        using var s = _app.NewScope();
+        var backups = Backups(s, copyTo: notAFolder);
+
+        var info = await backups.CreateAsync(); // doesn't throw
+        var view = backups.List();
+        Assert.Contains(view.Backups, b => b.Name == info.Name);
+        Assert.False(string.IsNullOrEmpty(view.CopyError));
+
+        // Once the folder works again, the error clears.
+        var ok = Backups(s, copyTo: Path.Combine(_root, "fixed"));
+        await ok.CreateAsync();
+        Assert.Null(ok.List().CopyError);
+    }
 
     /// <summary>Two portfolios with holdings, an order-linked fill, a cancelled order, history, a watchlist, an alert and a split.</summary>
     private async Task SeedAsync()

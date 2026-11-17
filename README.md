@@ -21,9 +21,23 @@ Paper-trading portfolio tracker. Buy and sell real tickers with fake money at li
    ```sh
    dotnet dev-certs https --trust
    ```
-4. `dotnet run`, then open <https://localhost:7245>. Plain <http://localhost:5231> redirects there.
+4. Install it (Windows):
 
-The SQLite file `folio.db` is created on first run with one portfolio, "My portfolio", holding $100,000. Use **Reset portfolio** to start it over with any amount, or **+ New** to add another.
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+   ```
+
+   This publishes Folio to `%LOCALAPPDATA%\Programs\Folio` as a background app with no console window. It adds a **Folio** desktop shortcut, which starts Folio if needed and opens <https://localhost:7245>, and it starts Folio when you sign in (skip with `-NoStartup`). Data lives in `%LOCALAPPDATA%\Folio`, separate from the program. On first install, this folder's `folio.db` is copied there.
+
+   - **Update** after pulling new code: run the same command again. Your data is kept.
+   - **Stop:** Task Manager → Folio → End task, or `Stop-Process -Name Folio`.
+   - **Uninstall:** `powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1` keeps your data. Add `-RemoveData` to delete it too.
+
+   Only one Folio runs per database. Opening the shortcut again just opens the browser.
+
+**For development**, `dotnet run` uses <https://localhost:7246> and this folder's own `folio.db`, so it never clashes with the installed copy.
+
+A new database starts with one portfolio, "My portfolio", holding $100,000. Use **Reset portfolio** to start it over with any amount, or **+ New** to add another.
 
 ## How it works
 
@@ -31,6 +45,7 @@ The SQLite file `folio.db` is created on first run with one portfolio, "My portf
 - **Orders** are market orders filled at Finnhub's latest price (`/quote`). Fractional shares are allowed, up to 4 decimals.
 - **Market hours:** trades only execute during the regular US session, 9:30 AM–4:00 PM ET on weekdays. Exchange holidays and 1:00 PM early closes (the day after Thanksgiving, Christmas Eve, July 3) are worked out from NYSE's published rules, so this needs no API calls; one-off closures announced at short notice aren't known. While the market is closed, market orders are refused and the top bar shows when it next opens. Limit and stop orders can still be placed; one that's already marketable waits for the open instead of filling on the last close. To trade around the clock at the last price, set `Folio:EnforceMarketHours` to `false`.
 - **Live prices:** Folio keeps one websocket open to Finnhub (the free tier allows one connection and 50 symbols) and streams trade prices for your holdings, open orders, SPY, your watchlist and the symbol in the order form, in that order of priority. The page receives them about once a second over server-sent events (`/api/stream`), so your API key never reaches the browser. Prices update in place with a brief green or red flash, and a **Live** badge shows in the top bar while the market is open. Streamed prices are layered over the REST quote everywhere: valuations, market orders and order fills all use the latest trade. Prints outside regular hours are ignored unless `Folio:EnforceMarketHours` is off. If the stream drops, Folio reconnects with backoff and falls back to the 15-second REST quotes meanwhile. Set `Finnhub:Streaming` to `false` to turn streaming off.
+- **Bad-price protection:** a streamed price more than 20% away from the last good one is held back. The last good price is the previous trade or, before any trades, the REST quote. A held price is used only if a second trade within 1% of it arrives within 2 minutes. Genuine big moves, like an earnings gap, get through a moment later; one-off bad prints never reach valuations, order fills or price alerts.
 - **Limit and stop orders** stay open until filled or cancelled. During market hours an order is checked as soon as a streamed trade crosses its price, and every 60 seconds as a fallback (`Folio:OrderCheckSeconds`). When the condition is met, the order fills at that market price:
   - Buy limit: fills when the price is at or below the limit.
   - Sell limit: fills when the price is at or above the limit.
@@ -101,6 +116,7 @@ Errors return `{ "error": "..." }`: 400 for rejected orders, 404 for an unknown 
 ## Backups
 
 - **Automatic:** Folio copies `folio.db` to the `backups` folder when it starts (if the last copy is over a day old) and then daily while it runs, keeping the newest 14 (`Folio:BackupDirectory`, `Folio:BackupKeep`). Copies use SQLite's online backup, so they're consistent even mid-trade. The folder is git-ignored.
+- **Off this PC:** `Folio:CopyBackupsTo` puts a copy of every backup in a second folder and prunes old ones there too. The installer points it at `%OneDrive%\Folio backups` when OneDrive is set up, so copies sync to the cloud; pass `-CopyBackupsTo ""` to turn this off. A failed copy never fails the backup; the Backups dialog shows the problem. Only backups go there, never the live database, because syncing a database while it's open can corrupt it.
 - **Backups dialog** (top bar): see recent backups, **Back up now**, **Export everything** (one `.json` file with every portfolio, trade, order, value history, watchlist entry, alert and split), and **Restore from export**.
 - **Restoring an export** replaces all current data. Folio first validates the whole file (ids, links between trades and orders, symbols, amounts, no future dates) and refuses anything it couldn't have written itself, then saves a `…-before-import.db` backup so the restore can be undone.
 - **Restoring a `.db` backup:** stop Folio, copy the backup over `folio.db` (delete `folio.db-wal` and `folio.db-shm` if present), and start Folio again.
@@ -125,7 +141,7 @@ If you ever want Folio reachable from other devices, it needs a login first; the
 dotnet test Folio.slnx
 ```
 
-xUnit tests in `tests/Folio.Tests` cover backups (copies, pruning, export/import round trip, validation, the undo backup), security (headers, HTTPS redirect, foreign host names, cross-site requests and origins, injection attempts, error output; run against the real app pipeline), multiple portfolios (separation of cash, holdings, orders and history; fills into the right portfolio; reset; validation; deletion), trading (average cost, realized P&L, rounding, rejections, invalid sides), stock splits (forward and reverse, every portfolio, open orders, fractions, validation), timestamps from the app clock, company profile refresh, performance stats (win rate, averages, profit factor, drawdown and recovery), trading costs (fill prices, limit caps, cost basis, cash checks, settings), price alerts (direction, refusals, firing once, market hours, history, watchlist removal, splits, the stream event), live prices (merging ticks into quotes, message parsing, subscriptions, the event stream, tick-triggered fills), market hours (NYSE holidays, early closes, daylight saving, closed-market trading), limit and stop orders (trigger rules, fills, commitments, cancels, stale prices), company profiles and logos, the watchlist, trade history paging, CSV export (quoting, formula escaping, locale), reset, valuation, snapshots and the benchmark maths. They use a fake Finnhub and an in-memory SQLite database with the real migrations, so they need neither an API key nor a network connection. One optional test connects to the real Finnhub websocket when a `FINNHUB_KEY` environment variable is set; it streams a crypto pair, so it works even when US markets are closed.
+xUnit tests in `tests/Folio.Tests` cover bad-price protection (held jumps, confirmation, the REST yardstick, no fills from a bad tick), backups (copies, pruning, off-PC copies, export/import round trip, validation, the undo backup), security (headers, HTTPS redirect, foreign host names, cross-site requests and origins, injection attempts, error output; run against the real app pipeline), multiple portfolios (separation of cash, holdings, orders and history; fills into the right portfolio; reset; validation; deletion), trading (average cost, realized P&L, rounding, rejections, invalid sides), stock splits (forward and reverse, every portfolio, open orders, fractions, validation), timestamps from the app clock, company profile refresh, performance stats (win rate, averages, profit factor, drawdown and recovery), trading costs (fill prices, limit caps, cost basis, cash checks, settings), price alerts (direction, refusals, firing once, market hours, history, watchlist removal, splits, the stream event), live prices (merging ticks into quotes, message parsing, subscriptions, the event stream, tick-triggered fills), market hours (NYSE holidays, early closes, daylight saving, closed-market trading), limit and stop orders (trigger rules, fills, commitments, cancels, stale prices), company profiles and logos, the watchlist, trade history paging, CSV export (quoting, formula escaping, locale), reset, valuation, snapshots and the benchmark maths. They use a fake Finnhub and an in-memory SQLite database with the real migrations, so they need neither an API key nor a network connection. One optional test connects to the real Finnhub websocket when a `FINNHUB_KEY` environment variable is set; it streams a crypto pair, so it works even when US markets are closed.
 
 ## Continuous integration
 
