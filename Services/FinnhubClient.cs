@@ -53,7 +53,9 @@ public class FinnhubClient(HttpClient http, IMemoryCache cache, IOptions<Finnhub
     public async Task<Quote?> GetQuoteAsync(string symbol, CancellationToken ct = default)
     {
         var quote = await GetRestQuoteAsync(symbol.ToUpperInvariant(), ct);
-        return quote is null ? null : live.Merge(quote);
+        if (quote is null) return null;
+        live.NoteQuote(quote); // yardstick for the first streamed tick
+        return live.Merge(quote);
     }
 
     private async Task<Quote?> GetRestQuoteAsync(string symbol, CancellationToken ct)
