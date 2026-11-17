@@ -3,4 +3,5 @@
     <Project Path="tests/Folio.Tests/Folio.Tests.csproj" />
   </Folder>
   <Project Path="Folio.csproj" />
+  <Project Path="FolioTray/FolioTray.csproj" />
 </Solution>

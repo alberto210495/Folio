@@ -7,15 +7,15 @@ namespace Folio.Services;
 public static class Security
 {
     /// <summary>
-    /// Content Security Policy. Scripts, styles, data and connections only from Folio itself; images also
-    /// from Finnhub's logo host. Inline <c>style="…"</c> attributes are allowed (the charts set widths and
+    /// Content Security Policy. Scripts, styles, images, data and connections only from Folio itself (logos are
+    /// served by Folio too, so nothing loads from elsewhere). Inline <c>style="…"</c> attributes are allowed (the charts set widths and
     /// colours that way), but inline scripts, eval, plugins, framing and foreign form targets are not.
     /// </summary>
     public const string ContentSecurityPolicy =
         "default-src 'none'; " +
         "script-src 'self'; " +
         "style-src 'self'; style-src-attr 'unsafe-inline'; " +
-        "img-src 'self' data: https://*.finnhub.io; " +
+        "img-src 'self' data:; " +
         "connect-src 'self'; " +
         "font-src 'self'; " +
         "manifest-src 'self'; " +
@@ -38,7 +38,8 @@ public static class Security
             h["Cross-Origin-Opener-Policy"] = "same-origin";
             h["Cross-Origin-Resource-Policy"] = "same-origin";
             h["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=(), usb=()";
-            if (ctx.Request.Path.StartsWithSegments("/api"))
+            // API data isn't cached; logos are (the endpoint sets its own cache header).
+            if (ctx.Request.Path.StartsWithSegments("/api") && !ctx.Request.Path.StartsWithSegments("/api/logo"))
                 h.CacheControl = "no-store";
             return Task.CompletedTask;
         });

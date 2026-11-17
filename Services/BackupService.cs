@@ -10,7 +10,12 @@ namespace Folio.Services;
 public record BackupInfo(string Name, long Bytes, DateTime CreatedAt);
 
 /// <summary>Where backups go, how many are kept, and the off-PC copy folder (with its last error, if any).</summary>
-public record BackupView(string Directory, int Keep, IReadOnlyList<BackupInfo> Backups, string? CopyTo = null, string? CopyError = null);
+/// <param name="Encrypted">Off-PC copies are encrypted with your passphrase.</param>
+/// <param name="CanEncrypt">This system can store a passphrase safely (Windows).</param>
+public record BackupView(string Directory, int Keep, IReadOnlyList<BackupInfo> Backups, string? CopyTo = null, string? CopyError = null,
+    bool Encrypted = false, bool CanEncrypt = false);
+
+public record PassphraseRequest(string Passphrase);
 
 /// <summary>
 /// Everything Folio stores, as one portable file. Ids are kept so links (a trade's order) survive a round trip.
@@ -43,7 +48,8 @@ public partial class BackupService(FolioDb db, IOptions<FolioOptions> options, I
     private static readonly SemaphoreSlim BackupLock = new(1, 1);
 
     // Only names Folio generated itself are ever listed, so a file name can't point outside the folder.
-    [GeneratedRegex(@"^folio-\d{8}-\d{6}(-[a-z-]{1,20})?\.db$")]
+    // Off-PC copies may carry ".enc" (encrypted with your passphrase).
+    [GeneratedRegex(@"^folio-\d{8}-\d{6}(-[a-z-]{1,20})?\.db(\.enc)?$")]
     private static partial Regex BackupName();
 
     public string Directory => Path.GetFullPath(Environment.ExpandEnvironmentVariables(options.Value.BackupDirectory), env.ContentRootPath);
@@ -55,10 +61,17 @@ public partial class BackupService(FolioDb db, IOptions<FolioOptions> options, I
 
     private static string? _lastCopyError;
 
-    public BackupView List() => new(Directory, options.Value.BackupKeep, ListIn(Directory), CopyDirectory, CopyDirectory is null ? null : _lastCopyError);
+    /// <summary>
+    /// Your off-PC passphrase, encrypted with Windows data protection. Kept with the local backups, which never
+    /// leave this PC, so the copies in OneDrive and the means to open them are never in the same place.
+    /// </summary>
+    private string PassphraseFile => Path.Combine(Directory, "offpc-passphrase.dpapi");
+
+    public BackupView List() => new(Directory, options.Value.BackupKeep, ListIn(Directory), CopyDirectory,
+        CopyDirectory is null ? null : _lastCopyError, File.Exists(PassphraseFile), LocalProtection.IsAvailable);
 
     private static List<BackupInfo> ListIn(string dir) => System.IO.Directory.Exists(dir)
-        ? new DirectoryInfo(dir).GetFiles("folio-*.db").Where(f => BackupName().IsMatch(f.Name))
+        ? new DirectoryInfo(dir).GetFiles("folio-*").Where(f => BackupName().IsMatch(f.Name))
             .OrderByDescending(f => f.Name, StringComparer.Ordinal) // names sort by time
             .Select(f => new BackupInfo(f.Name, f.Length, f.LastWriteTimeUtc)).ToList()
         : [];
@@ -127,7 +140,17 @@ public partial class BackupService(FolioDb db, IOptions<FolioOptions> options, I
         try
         {
             System.IO.Directory.CreateDirectory(dir);
-            File.Copy(path, Path.Combine(dir, name), overwrite: true);
+            if (File.Exists(PassphraseFile))
+            {
+                // Fail closed: if the passphrase can't be read, never fall back to an unencrypted copy.
+                var passphrase = LocalProtection.Unprotect(File.ReadAllText(PassphraseFile))
+                    ?? throw new IOException("The backup passphrase can't be read on this PC or Windows account. Set it again in the Backups dialog.");
+                WriteAtomically(Path.Combine(dir, name + BackupEncryption.Extension), BackupEncryption.Encrypt(File.ReadAllBytes(path), passphrase));
+            }
+            else
+            {
+                File.Copy(path, Path.Combine(dir, name), overwrite: true);
+            }
             Prune(dir);
             _lastCopyError = null;
         }
@@ -137,6 +160,47 @@ public partial class BackupService(FolioDb db, IOptions<FolioOptions> options, I
             log.LogWarning("Couldn't copy backup {Name} to {Folder}: {Message}", name, dir, ex.Message);
         }
     }
+
+    private static void WriteAtomically(string path, byte[] bytes)
+    {
+        var temp = path + ".tmp";
+        File.WriteAllBytes(temp, bytes);
+        File.Move(temp, path, overwrite: true);
+    }
+
+    /// <summary>
+    /// Sets (or changes) the passphrase for off-PC copies, stored with Windows data protection. Then replaces every
+    /// copy in the off-PC folder (including any unencrypted ones) with the newest backup encrypted under it, so
+    /// that folder only ever holds files your current passphrase opens.
+    /// </summary>
+    public async Task<BackupView> SetPassphraseAsync(string? passphrase, CancellationToken ct = default)
+    {
+        BackupEncryption.ValidatePassphrase(passphrase);
+        if (!LocalProtection.IsAvailable) throw new TradeRejectedException("Encrypted copies need Windows to store the passphrase safely.");
+
+        await BackupLock.WaitAsync(ct);
+        try
+        {
+            System.IO.Directory.CreateDirectory(Directory);
+            WriteAtomically(PassphraseFile, System.Text.Encoding.UTF8.GetBytes(LocalProtection.Protect(passphrase!)));
+
+            if (CopyDirectory is { } dir && System.IO.Directory.Exists(dir))
+                foreach (var copy in ListIn(dir))
+                    File.Delete(Path.Combine(dir, copy.Name));
+            if (ListIn(Directory).FirstOrDefault() is { } newest)
+                CopyOffPc(Path.Combine(Directory, newest.Name), newest.Name);
+            log.LogInformation("Off-PC backup copies are now encrypted with your passphrase");
+        }
+        finally
+        {
+            BackupLock.Release();
+        }
+        return List();
+    }
+
+    /// <summary>Decrypts an encrypted copy to a normal .db file (for restoring on any computer).</summary>
+    public static void DecryptFile(string encryptedPath, string outputPath, string passphrase) =>
+        WriteAtomically(outputPath, BackupEncryption.Decrypt(File.ReadAllBytes(encryptedPath), passphrase));
 
     public async Task<FolioArchive> ExportAsync(CancellationToken ct = default) => new(
         ArchiveVersion,

@@ -121,6 +121,7 @@ public class SnapshotServiceTests : IDisposable
 
         Assert.Equal("SPY", h.BenchmarkSymbol);
         Assert.Equal(110_000m, h.BenchmarkNow);
+        Assert.Equal(500m, h.BenchmarkBasePrice); // lets the page move the line with live SPY prices
         Assert.Equal(100_000m, h.Points[0].B);  // account-start anchor
         Assert.Equal(110_000m, h.Points[^1].B);
         Assert.All(h.Points, p => Assert.Equal(100_000m, p.V));

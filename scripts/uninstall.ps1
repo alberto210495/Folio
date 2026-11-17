@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Removes the installed Folio (program and shortcuts). Your data in %LOCALAPPDATA%\Folio is kept.
+  Removes the installed Folio (program, tray icon and shortcuts). Your data in %LOCALAPPDATA%\Folio is kept.
 
 .PARAMETER RemoveData
   Also delete %LOCALAPPDATA%\Folio (folio.db and its local backups). Off-PC backup copies are never touched.
@@ -12,11 +12,14 @@ $ErrorActionPreference = 'Stop'
 $app = Join-Path $env:LOCALAPPDATA 'Programs\Folio'
 $data = Join-Path $env:LOCALAPPDATA 'Folio'
 $exe = Join-Path $app 'Folio.exe'
+$tray = Join-Path $app 'FolioTray.exe'
 
-Get-Process -Name Folio -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe } | ForEach-Object {
-    $_ | Stop-Process -Force
-    $_ | Wait-Process -Timeout 15 -ErrorAction SilentlyContinue
-}
+# Ask the tray to shut Folio down cleanly, then make sure (matched by path only).
+$installed = { Get-Process -Name Folio, FolioTray -ErrorAction SilentlyContinue | Where-Object { $_.Path -in $exe, $tray } }
+if (Test-Path $tray) { Start-Process -FilePath $tray -ArgumentList '--quit' -Wait }
+& $installed | Wait-Process -Timeout 20 -ErrorAction SilentlyContinue
+& $installed | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Milliseconds 500
 
 foreach ($link in (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Folio.lnk'),
                   (Join-Path ([Environment]::GetFolderPath('Startup')) 'Folio.lnk')) {
