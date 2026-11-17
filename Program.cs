@@ -6,6 +6,37 @@ using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Your Finnhub key lives in user secrets on this PC; read them in every environment (the installed copy runs
+// as Production) except the test suite's, so tests never use your real key.
+if (!builder.Environment.IsEnvironment("Testing"))
+    builder.Configuration.AddUserSecrets<Program>(optional: true);
+
+// The installed copy keeps its data outside the program folder (Folio:DataDirectory, e.g. %LOCALAPPDATA%\Folio),
+// so reinstalling never touches it. Without it, folio.db sits next to the app as before.
+var dataDir = builder.Configuration["Folio:DataDirectory"];
+if (!string.IsNullOrWhiteSpace(dataDir))
+{
+    dataDir = Path.GetFullPath(Environment.ExpandEnvironmentVariables(dataDir));
+    Directory.CreateDirectory(dataDir);
+    builder.Configuration["ConnectionStrings:Folio"] = $"Data Source={Path.Combine(dataDir, "folio.db")}";
+    if (builder.Configuration["Folio:BackupDirectory"] is null or "backups")
+        builder.Configuration["Folio:BackupDirectory"] = Path.Combine(dataDir, "backups");
+}
+
+// One Folio per database. Starting it again (the desktop shortcut) just opens the running one in the browser.
+var openBrowser = args.Contains("--open");
+var siteUrl = builder.Configuration["Kestrel:Endpoints:Https:Url"] ?? "https://localhost:7245";
+var dbPath = Path.GetFullPath(new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder(
+    builder.Configuration.GetConnectionString("Folio") ?? "Data Source=folio.db").DataSource, builder.Environment.ContentRootPath);
+var instanceName = "Local\\Folio-" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+    System.Text.Encoding.UTF8.GetBytes(dbPath.ToLowerInvariant())))[..16];
+using var instance = new Mutex(true, instanceName, out var firstInstance);
+if (!firstInstance)
+{
+    if (openBrowser) OpenBrowser(siteUrl);
+    return;
+}
+
 // Small attack surface: no server banner, small request bodies (the largest real request is a few hundred bytes).
 builder.WebHost.ConfigureKestrel(k =>
 {
@@ -30,7 +61,8 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<MarketClock>();
 builder.Services.AddSingleton(sp => new LivePrices(
     sp.GetRequiredService<TimeProvider>(),
-    regularHoursOnly: sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<FolioOptions>>().Value.EnforceMarketHours));
+    regularHoursOnly: sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<FolioOptions>>().Value.EnforceMarketHours,
+    log: sp.GetRequiredService<ILogger<LivePrices>>()));
 builder.Services.AddSingleton<IStreamSymbols, DbStreamSymbols>();
 builder.Services.AddHostedService<FinnhubStream>();
 builder.Services.AddScoped<PortfolioContext>();
@@ -270,7 +302,15 @@ api.MapGet("/company/{symbol}", async (string symbol, TradingService t, Cancella
 api.MapGet("/search", async (string q, FinnhubClient f, CancellationToken ct) =>
     string.IsNullOrWhiteSpace(q) || q.Length > 30 ? Results.Ok(Array.Empty<SymbolMatch>()) : Results.Ok(await f.SearchAsync(q.Trim(), ct)));
 
-app.Run();
+await app.StartAsync();
+if (openBrowser) OpenBrowser(siteUrl);
+await app.WaitForShutdownAsync();
+
+static void OpenBrowser(string url)
+{
+    try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true }); }
+    catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { /* no browser registered */ }
+}
 
 record ResetRequest(decimal StartingCash);
 

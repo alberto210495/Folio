@@ -23,6 +23,15 @@ public class FolioOptions
 
     /// <summary>How many backups to keep; older ones are deleted.</summary>
     public int BackupKeep { get; set; } = 14;
+
+    /// <summary>
+    /// Optional second folder that gets a copy of every backup, e.g. <c>%OneDrive%\Folio backups</c>, so a copy
+    /// leaves this PC. Environment variables are expanded. Empty = off.
+    /// </summary>
+    public string CopyBackupsTo { get; set; } = "";
+
+    /// <summary>Where the installed copy keeps folio.db and its backups (env vars expanded). Empty = next to the app.</summary>
+    public string DataDirectory { get; set; } = "";
 }
 
 /// <param name="T">Time (UTC).</param>
