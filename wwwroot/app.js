@@ -1670,6 +1670,12 @@ async function renderBackups() {
     const view = await api("/api/backups");
     $("#backup-dir").textContent = view.directory;
     $("#backup-keep").textContent = view.keep;
+    const copy = $("#backup-copy");
+    copy.hidden = !view.copyTo;
+    copy.className = view.copyError ? "small down" : "muted small";
+    copy.textContent = !view.copyTo ? ""
+      : view.copyError ? `Couldn't copy the last backup to ${view.copyTo}: ${view.copyError}`
+      : `Each backup is also copied to ${view.copyTo}.`;
     list.innerHTML = view.backups.length
       ? view.backups.slice(0, 6).map((b) => `
         <li><span>${timeFmt.format(new Date(b.createdAt))}${/-before-import\.db$/.test(b.name) ? ` <span class="muted">· before import</span>` : /-manual\.db$/.test(b.name) ? ` <span class="muted">· manual</span>` : ""}</span>

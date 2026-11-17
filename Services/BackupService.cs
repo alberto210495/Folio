@@ -9,8 +9,8 @@ namespace Folio.Services;
 
 public record BackupInfo(string Name, long Bytes, DateTime CreatedAt);
 
-/// <summary>Where backups go and how many are kept.</summary>
-public record BackupView(string Directory, int Keep, IReadOnlyList<BackupInfo> Backups);
+/// <summary>Where backups go, how many are kept, and the off-PC copy folder (with its last error, if any).</summary>
+public record BackupView(string Directory, int Keep, IReadOnlyList<BackupInfo> Backups, string? CopyTo = null, string? CopyError = null);
 
 /// <summary>
 /// Everything Folio stores, as one portable file. Ids are kept so links (a trade's order) survive a round trip.
@@ -46,17 +46,22 @@ public partial class BackupService(FolioDb db, IOptions<FolioOptions> options, I
     [GeneratedRegex(@"^folio-\d{8}-\d{6}(-[a-z-]{1,20})?\.db$")]
     private static partial Regex BackupName();
 
-    public string Directory => Path.GetFullPath(options.Value.BackupDirectory, env.ContentRootPath);
+    public string Directory => Path.GetFullPath(Environment.ExpandEnvironmentVariables(options.Value.BackupDirectory), env.ContentRootPath);
 
-    public BackupView List()
-    {
-        var files = System.IO.Directory.Exists(Directory)
-            ? new DirectoryInfo(Directory).GetFiles("folio-*.db").Where(f => BackupName().IsMatch(f.Name))
-                .OrderByDescending(f => f.Name, StringComparer.Ordinal) // names sort by time
-                .Select(f => new BackupInfo(f.Name, f.Length, f.LastWriteTimeUtc)).ToList()
-            : [];
-        return new(Directory, options.Value.BackupKeep, files);
-    }
+    /// <summary>The off-PC copy folder, or null when <see cref="FolioOptions.CopyBackupsTo"/> is empty.</summary>
+    public string? CopyDirectory => string.IsNullOrWhiteSpace(options.Value.CopyBackupsTo)
+        ? null
+        : Path.GetFullPath(Environment.ExpandEnvironmentVariables(options.Value.CopyBackupsTo), env.ContentRootPath);
+
+    private static string? _lastCopyError;
+
+    public BackupView List() => new(Directory, options.Value.BackupKeep, ListIn(Directory), CopyDirectory, CopyDirectory is null ? null : _lastCopyError);
+
+    private static List<BackupInfo> ListIn(string dir) => System.IO.Directory.Exists(dir)
+        ? new DirectoryInfo(dir).GetFiles("folio-*.db").Where(f => BackupName().IsMatch(f.Name))
+            .OrderByDescending(f => f.Name, StringComparer.Ordinal) // names sort by time
+            .Select(f => new BackupInfo(f.Name, f.Length, f.LastWriteTimeUtc)).ToList()
+        : [];
 
     /// <summary>
     /// Copies the live database with SQLite's online backup (consistent even while Folio is writing), then
@@ -87,7 +92,8 @@ public partial class BackupService(FolioDb db, IOptions<FolioOptions> options, I
                 if (wasClosed) await source.CloseAsync();
             }
 
-            Prune();
+            Prune(Directory);
+            CopyOffPc(path, name);
             var info = new FileInfo(path);
             log.LogInformation("Backed up the database to {Name} ({Bytes} bytes)", name, info.Length);
             return new(name, info.Length, info.LastWriteTimeUtc);
@@ -101,12 +107,34 @@ public partial class BackupService(FolioDb db, IOptions<FolioOptions> options, I
     /// <summary>When the newest backup was taken, or null if there are none.</summary>
     public DateTime? LatestAt() => List().Backups.FirstOrDefault()?.CreatedAt;
 
-    private void Prune()
+    private void Prune(string dir)
     {
-        foreach (var old in List().Backups.Skip(Math.Max(1, options.Value.BackupKeep)))
+        foreach (var old in ListIn(dir).Skip(Math.Max(1, options.Value.BackupKeep)))
         {
-            try { File.Delete(Path.Combine(Directory, old.Name)); }
-            catch (IOException ex) { log.LogWarning("Couldn't delete old backup {Name}: {Message}", old.Name, ex.Message); }
+            try { File.Delete(Path.Combine(dir, old.Name)); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { log.LogWarning("Couldn't delete old backup {Name}: {Message}", old.Name, ex.Message); }
+        }
+    }
+
+    /// <summary>
+    /// Copies the new backup to <see cref="CopyDirectory"/> (e.g. a OneDrive folder) and prunes old copies there.
+    /// Never fails the backup itself: a problem is logged and shown in the Backups dialog.
+    /// </summary>
+    private void CopyOffPc(string path, string name)
+    {
+        var dir = CopyDirectory;
+        if (dir is null) return;
+        try
+        {
+            System.IO.Directory.CreateDirectory(dir);
+            File.Copy(path, Path.Combine(dir, name), overwrite: true);
+            Prune(dir);
+            _lastCopyError = null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _lastCopyError = ex.Message;
+            log.LogWarning("Couldn't copy backup {Name} to {Folder}: {Message}", name, dir, ex.Message);
         }
     }
 
