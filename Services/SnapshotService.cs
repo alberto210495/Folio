@@ -32,6 +32,15 @@ public class FolioOptions
 
     /// <summary>Where the installed copy keeps folio.db and its backups (env vars expanded). Empty = next to the app.</summary>
     public string DataDirectory { get; set; } = "";
+
+    /// <summary>Folder for daily log files. Empty = "logs" in <see cref="DataDirectory"/> when that's set, else no log file.</summary>
+    public string LogDirectory { get; set; } = "";
+
+    /// <summary>Require the local access key (see AccessKey). Unset = on for the installed copy (DataDirectory set), off otherwise.</summary>
+    public bool? RequireAccessKey { get; set; }
+
+    /// <summary>Where the access key is kept. Empty = access.key in the data folder.</summary>
+    public string AccessKeyFile { get; set; } = "";
 }
 
 /// <param name="T">Time (UTC).</param>
@@ -39,7 +48,8 @@ public class FolioOptions
 /// <param name="B">What the starting cash would be worth if it had all gone into the benchmark at account start.</param>
 public record HistoryPoint(DateTime T, decimal V, decimal? B);
 
-public record HistoryView(decimal StartingCash, string BenchmarkSymbol, decimal? BenchmarkNow, IReadOnlyList<HistoryPoint> Points);
+/// <param name="BenchmarkBasePrice">The benchmark's price when the account started, so the page can move the comparison line with live prices.</param>
+public record HistoryView(decimal StartingCash, string BenchmarkSymbol, decimal? BenchmarkNow, IReadOnlyList<HistoryPoint> Points, decimal? BenchmarkBasePrice = null);
 
 /// <summary>Records and serves account-value snapshots for the value-over-time chart.</summary>
 public class SnapshotService(FolioDb db, PortfolioService portfolio, FinnhubClient finnhub, PortfolioContext current, IOptions<FolioOptions> options, TimeProvider time)
@@ -133,7 +143,8 @@ public class SnapshotService(FolioDb db, PortfolioService portfolio, FinnhubClie
             account.StartingCash,
             _benchmark,
             BenchmarkValue(account.StartingCash, basePrice, now),
-            Downsample(points));
+            Downsample(points),
+            basePrice);
     }
 
     public static decimal? BenchmarkValue(decimal startingCash, decimal? basePrice, decimal? price) =>

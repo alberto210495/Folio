@@ -30,8 +30,10 @@ function pnl(v, p) {
 const failedLogos = new Set();
 function logo(sym, url) {
   const letter = esc((sym || "?")[0]);
-  return url && url.startsWith("https://") && !failedLogos.has(url)
-    ? `<span class="co-logo"><img src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer" data-letter="${letter}"></span>`
+  // Served by Folio (cached from Finnhub), so the browser never contacts Finnhub's image servers.
+  const src = url ? `/api/logo/${encodeURIComponent(sym)}` : null;
+  return src && !failedLogos.has(src)
+    ? `<span class="co-logo"><img src="${esc(src)}" alt="" loading="lazy" data-letter="${letter}"></span>`
     : `<span class="co-logo mono" aria-hidden="true">${letter}</span>`;
 }
 // Image errors don't bubble, so listen in the capture phase.
@@ -55,6 +57,10 @@ async function api(path, opts = {}) {
   });
   if (res.status === 204) return null;
   const body = await res.json().catch(() => null);
+  if (res.status === 401) {
+    // The access cookie is missing or the key changed: reopening from the shortcut or tray unlocks again.
+    banner("Folio is locked. Open it from the <b>Folio</b> shortcut on your desktop or <b>Open Folio</b> on the tray icon.");
+  }
   if (!res.ok) throw new Error(body?.error || `Request failed (${res.status})`);
   return body;
 }
@@ -452,6 +458,12 @@ function applyPrices(prices) {
     if (row) patchRow(row, orderCells(o), dir);
   }
 
+  // The value chart's last point is "now": move both lines with the ticks (redrawn at most every few seconds).
+  const h = state.history;
+  const benchPx = h && live(h.benchmarkSymbol);
+  if (benchPx != null && h.benchmarkBasePrice) h.benchmarkNow = round2((h.startingCash * benchPx) / h.benchmarkBasePrice);
+  if (p || benchPx != null) scheduleChart();
+
   const q = state.quote;
   if (q && live(q.symbol) != null) {
     const px = live(q.symbol);
@@ -568,6 +580,21 @@ async function loadHistory() {
     state.history = null;
   }
   renderHistory();
+}
+
+const CHART_EVERY_MS = 5000;
+let chartTimer = null, chartDrawnAt = 0;
+
+/** Redraws the value chart for live prices, at most every few seconds, and not while its tooltip is open. */
+function scheduleChart() {
+  if (chartTimer) return;
+  const wait = Math.max(0, CHART_EVERY_MS - (Date.now() - chartDrawnAt));
+  chartTimer = setTimeout(() => {
+    chartTimer = null;
+    if (!$("#hist-tip").hidden) return scheduleChart(); // you're reading a point; try again shortly
+    chartDrawnAt = Date.now();
+    renderHistory();
+  }, wait);
 }
 
 function historyPoints() {
@@ -1670,6 +1697,13 @@ async function renderBackups() {
     const view = await api("/api/backups");
     $("#backup-dir").textContent = view.directory;
     $("#backup-keep").textContent = view.keep;
+    const enc = $("#backup-enc");
+    enc.hidden = !view.copyTo || !view.canEncrypt;
+    $("#backup-enc-status").className = view.encrypted ? "small" : "small down";
+    $("#backup-enc-status").textContent = view.encrypted
+      ? "Copies leaving this PC are encrypted with your passphrase."
+      : "Copies leaving this PC are NOT encrypted: anyone who gets into that folder can read your portfolios. Set a passphrase to encrypt them.";
+    $("#passphrase-save").textContent = view.encrypted ? "Change passphrase" : "Encrypt copies";
     const copy = $("#backup-copy");
     copy.hidden = !view.copyTo;
     copy.className = view.copyError ? "small down" : "muted small";
@@ -1691,6 +1725,26 @@ $("#data").addEventListener("click", () => {
   $("#import-file").value = "";
   dataDlg.showModal();
   renderBackups();
+});
+
+$("#passphrase-save").addEventListener("click", async (ev) => {
+  const msg = $("#data-msg");
+  const a = $("#passphrase").value, b = $("#passphrase2").value;
+  msg.className = "small msg down";
+  if (a !== b) { msg.textContent = "The two passphrases don't match."; return; }
+  const btn = ev.currentTarget;
+  btn.disabled = true;
+  try {
+    await api("/api/backups/passphrase", { method: "POST", body: JSON.stringify({ passphrase: a }) });
+    $("#passphrase").value = $("#passphrase2").value = "";
+    msg.className = "small msg";
+    msg.textContent = "Done. Off-PC copies are now encrypted, and older copies there were replaced. Keep the passphrase somewhere safe: without it they can't be restored.";
+    await renderBackups();
+  } catch (e) {
+    msg.textContent = e.message;
+  } finally {
+    btn.disabled = false;
+  }
 });
 
 $("#backup-now").addEventListener("click", async (ev) => {

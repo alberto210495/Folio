@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Tray icon for the installed Folio (Windows only). Starts Folio, restarts it if it crashes, and offers
+       Open / Restart / Open logs / Quit. Kept separate so Folio itself stays cross-platform. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Lets CI build this project on Linux (it only runs on Windows). -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AssemblyName>FolioTray</AssemblyName>
+    <RootNamespace>FolioTray</RootNamespace>
+  </PropertyGroup>
+
+</Project>

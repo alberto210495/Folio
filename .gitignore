@@ -486,3 +486,7 @@ folio.db*
 # Folio's automatic database backups
 backups/
 
+
+# Local secrets and caches when running from this folder
+access.key
+logos/

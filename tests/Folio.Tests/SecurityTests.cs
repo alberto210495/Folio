@@ -6,7 +6,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 namespace Folio.Tests;
 
 /// <summary>Hosts the real app (all middleware) on a throwaway database, without a Finnhub key.</summary>
-public sealed class FolioFactory : WebApplicationFactory<Program>
+public class FolioFactory : WebApplicationFactory<Program>
 {
     private readonly string _db = Path.Combine(Path.GetTempPath(), $"folio-test-{Guid.NewGuid():N}.db");
 
@@ -49,6 +49,8 @@ public class SecurityTests : IClassFixture<FolioFactory>
 
         var csp = res.Headers.GetValues("Content-Security-Policy").Single();
         Assert.Contains("default-src 'none'", csp);
+        Assert.Contains("img-src 'self' data:;", csp); // logos come from Folio itself now
+        Assert.DoesNotContain("finnhub", csp);
         Assert.Contains("script-src 'self';", csp);
         Assert.Contains("frame-ancestors 'none'", csp);
         Assert.DoesNotContain("unsafe-eval", csp);
