@@ -51,3 +51,30 @@ jobs:
             echo "::error::A package has a known vulnerability (see above)."
             exit 1
           fi
+
+  # The page itself (wwwroot/app.js), run in jsdom against a fake API. Node is only for these tests;
+  # Folio has no build step and ships no Node code.
+  web:
+    name: Page tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: tests/web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Install
+        run: npm ci --ignore-scripts
+
+      - name: Test
+        run: npm test
+
+      - name: Check for vulnerable packages
+        run: npm audit --audit-level=moderate

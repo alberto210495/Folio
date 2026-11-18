@@ -18,6 +18,16 @@ updates:
       - dependency-name: "Microsoft.AspNetCore.*"
         update-types: [version-update:semver-major]
 
+  # jsdom, for the page tests in tests/web (dev-only; nothing from npm ships with Folio).
+  - package-ecosystem: npm
+    directory: "/tests/web"
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      web-tests:
+        patterns: ["*"]
+
   - package-ecosystem: github-actions
     directory: "/"
     schedule:

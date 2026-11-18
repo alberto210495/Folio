@@ -86,6 +86,10 @@ namespace Folio.Data.Migrations
                     b.Property<int>("AccountId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("ClientOrderId")
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTime?>("ClosedAt")
                         .HasColumnType("TEXT");
 
@@ -127,9 +131,10 @@ namespace Folio.Data.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("AccountId");
-
                     b.HasIndex("Status");
+
+                    b.HasIndex("AccountId", "ClientOrderId")
+                        .IsUnique();
 
                     b.ToTable("Orders");
                 });
@@ -270,6 +275,10 @@ namespace Folio.Data.Migrations
                     b.Property<int>("AccountId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("ClientOrderId")
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
                     b.Property<decimal>("Commission")
                         .HasColumnType("TEXT");
 
@@ -304,6 +313,9 @@ namespace Folio.Data.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("OrderId");
+
+                    b.HasIndex("AccountId", "ClientOrderId")
+                        .IsUnique();
 
                     b.HasIndex("AccountId", "ExecutedAt");
 

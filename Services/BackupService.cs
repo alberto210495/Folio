@@ -320,6 +320,17 @@ public partial class BackupService(FolioDb db, IOptions<FolioOptions> options, I
             Money(p.AvgCost, $"average cost of {p.Symbol}");
         }
 
+        void ClientIds(IEnumerable<(int AccountId, string? Id)> ids, string what)
+        {
+            var given = ids.Where(x => x.Id is not null).ToList();
+            foreach (var (_, id) in given)
+                try { TradingService.ValidateClientOrderId(id); }
+                catch (TradeRejectedException) { throw Bad($"{what} has an invalid order ID."); }
+            Unique(given, $"{what} order ID");
+        }
+        ClientIds(a.Orders.Select(o => (o.AccountId, o.ClientOrderId)), "an order");
+        ClientIds(a.Trades.Select(t => (t.AccountId, t.ClientOrderId)), "a trade");
+
         Unique(a.Orders.Select(o => o.Id), "order id");
         foreach (var o in a.Orders)
         {

@@ -1,0 +1,15 @@
+{
+  "name": "folio-web-tests",
+  "private": true,
+  "description": "Tests for wwwroot/app.js: runs the real page in jsdom against a fake Folio API. Dev-only; nothing here ships.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "jsdom": "29.1.1"
+  }
+}

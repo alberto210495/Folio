@@ -4,7 +4,8 @@ using Microsoft.Extensions.Options;
 
 namespace Folio.Services;
 
-public record PlaceOrderRequest(string Symbol, TradeSide Side, OrderType Type, decimal Quantity, decimal Price);
+/// <param name="ClientOrderId">Optional; sending the same ID again returns the order already placed (see <see cref="TradeRequest"/>).</param>
+public record PlaceOrderRequest(string Symbol, TradeSide Side, OrderType Type, decimal Quantity, decimal Price, string? ClientOrderId = null);
 
 public record OrderView(
     int Id,
@@ -49,6 +50,11 @@ public class OrderService(FolioDb db, TradingService trading, FinnhubClient finn
         if (req.Price <= 0) throw new TradeRejectedException("Price must be greater than zero.");
         if (decimal.Round(req.Price, 4) != req.Price) throw new TradeRejectedException("Price supports at most 4 decimal places.");
         if (!Enum.IsDefined(req.Type)) throw new TradeRejectedException("Order type must be Limit or Stop.");
+        var clientOrderId = TradingService.ValidateClientOrderId(req.ClientOrderId);
+
+        // A retry gets the order it already placed, whatever the price or Finnhub are doing now.
+        if (clientOrderId is not null && await FindOrderAsync(clientOrderId, ct) is { } earlier)
+            return SameOrder(earlier, symbol, side, req.Type, qty, req.Price);
 
         var quote = await trading.LiveQuoteAsync(symbol, ct);
         var triggeredNow = IsTriggered(req.Side, req.Type, req.Price, quote.Price);
@@ -67,6 +73,9 @@ public class OrderService(FolioDb db, TradingService trading, FinnhubClient finn
         try
         {
             var accountId = portfolio.Id;
+            if (clientOrderId is not null && await FindOrderAsync(clientOrderId, ct) is { } placed)
+                return SameOrder(placed, symbol, side, req.Type, qty, req.Price);
+
             var open = await db.Orders.AsNoTracking().Where(o => o.AccountId == accountId && o.Status == OrderStatus.Open).ToListAsync(ct);
             if (req.Side == TradeSide.Sell)
             {
@@ -90,7 +99,11 @@ public class OrderService(FolioDb db, TradingService trading, FinnhubClient finn
                         : $"Insufficient cash: order needs about {Usd(cost)}, you have {Usd(account.Cash)}.");
             }
 
-            var order = new Order { AccountId = accountId, Symbol = symbol, Side = side, Type = req.Type, Quantity = qty, Price = req.Price, CreatedAt = Now };
+            var order = new Order
+            {
+                AccountId = accountId, Symbol = symbol, Side = side, Type = req.Type, Quantity = qty, Price = req.Price, CreatedAt = Now,
+                ClientOrderId = clientOrderId,
+            };
             db.Orders.Add(order);
             await db.SaveChangesAsync(ct);
 
@@ -105,6 +118,14 @@ public class OrderService(FolioDb db, TradingService trading, FinnhubClient finn
             OrderLock.Release();
         }
     }
+
+    private Task<Order?> FindOrderAsync(string clientOrderId, CancellationToken ct) =>
+        db.Orders.AsNoTracking().FirstOrDefaultAsync(o => o.AccountId == portfolio.Id && o.ClientOrderId == clientOrderId, ct);
+
+    private static OrderView SameOrder(Order earlier, string symbol, TradeSide side, OrderType type, decimal qty, decimal price) =>
+        earlier.Symbol == symbol && earlier.Side == side && earlier.Type == type && earlier.Quantity == qty && earlier.Price == price
+            ? ToView(earlier, null)
+            : throw TradingService.ReusedOrderId();
 
     public async Task<OrderView> CancelAsync(int id, CancellationToken ct = default)
     {
@@ -145,32 +166,48 @@ public class OrderService(FolioDb db, TradingService trading, FinnhubClient finn
         await OrderLock.WaitAsync(ct);
         try
         {
-            var open = await db.Orders.Where(o => o.Status == OrderStatus.Open && (symbol == null || o.Symbol == symbol)).ToListAsync(ct);
+            var symbols = await db.Orders.AsNoTracking()
+                .Where(o => o.Status == OrderStatus.Open && (symbol == null || o.Symbol == symbol))
+                .Select(o => o.Symbol).Distinct().ToListAsync(ct);
             var filled = 0;
-
-            foreach (var group in open.GroupBy(o => o.Symbol))
+            foreach (var s in symbols)
             {
-                Quote? quote;
-                try { quote = await finnhub.GetQuoteAsync(group.Key, ct); }
-                catch (FinnhubException ex)
+                try { filled += await CheckSymbolAsync(s, ct); }
+                catch (Exception ex) when (!ct.IsCancellationRequested)
                 {
-                    log.LogInformation("Skipping orders for {Symbol}: {Message}", group.Key, ex.Message);
-                    continue;
+                    // One symbol's failure (a database error mid-fill, say) mustn't stop the others. Drop anything
+                    // it left half-done so the next symbol's save can't write it; each symbol loads its own orders.
+                    db.ChangeTracker.Clear();
+                    log.LogWarning(ex, "Order check for {Symbol} failed; it's checked again next round", s);
                 }
-                // Never fill on a stale price.
-                if (quote is not { Stale: false, Price: > 0 }) continue;
-
-                foreach (var order in group.OrderBy(o => o.CreatedAt))
-                    if (IsTriggered(order.Side, order.Type, order.Price, quote.Price) && await TryFillAsync(order, quote.Price, ct))
-                        filled++;
             }
-
             return filled;
         }
         finally
         {
             OrderLock.Release();
         }
+    }
+
+    /// <summary>Checks one symbol's open orders against its quote. Returns how many filled.</summary>
+    private async Task<int> CheckSymbolAsync(string symbol, CancellationToken ct)
+    {
+        Quote? quote;
+        try { quote = await finnhub.GetQuoteAsync(symbol, ct); }
+        catch (FinnhubException ex)
+        {
+            log.LogInformation("Skipping orders for {Symbol}: {Message}", symbol, ex.Message);
+            return 0;
+        }
+        // Never fill on a stale price.
+        if (quote is not { Stale: false, Price: > 0 }) return 0;
+
+        var orders = await db.Orders.Where(o => o.Status == OrderStatus.Open && o.Symbol == symbol).OrderBy(o => o.CreatedAt).ToListAsync(ct);
+        var filled = 0;
+        foreach (var order in orders)
+            if (IsTriggered(order.Side, order.Type, order.Price, quote.Price) && await TryFillAsync(order, quote.Price, ct))
+                filled++;
+        return filled;
     }
 
     public async Task<IReadOnlyList<OrderView>> ListAsync(string? status, int limit, CancellationToken ct = default)

@@ -52,6 +52,8 @@ public class Trade
     public decimal Slippage { get; set; }
     /// <summary>The resting order this fill came from; null for market orders.</summary>
     public int? OrderId { get; set; }
+    /// <summary>The ID the page sent with a market order, so a retry can't trade twice. Unique per portfolio.</summary>
+    public string? ClientOrderId { get; set; }
     public DateTime ExecutedAt { get; set; } = DateTime.UtcNow;
 }
 
@@ -102,6 +104,8 @@ public class Order
     public decimal? FillPrice { get; set; }
     /// <summary>Why the order was rejected at fill time (e.g. not enough cash by then).</summary>
     public string? Reason { get; set; }
+    /// <summary>The ID the page sent with the order, so a retry can't place it twice. Unique per portfolio.</summary>
+    public string? ClientOrderId { get; set; }
 }
 
 /// <summary>

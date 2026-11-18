@@ -61,7 +61,7 @@ async function api(path, opts = {}) {
     // The access cookie is missing or the key changed: reopening from the shortcut or tray unlocks again.
     banner("Folio is locked. Open it from the <b>Folio</b> shortcut on your desktop or <b>Open Folio</b> on the tray icon.");
   }
-  if (!res.ok) throw new Error(body?.error || `Request failed (${res.status})`);
+  if (!res.ok) throw Object.assign(new Error(body?.error || `Request failed (${res.status})`), { status: res.status });
   return body;
 }
 
@@ -1625,6 +1625,18 @@ symbolInput.addEventListener("blur", () => {
   if (v && v !== state.quote?.symbol) selectSymbol(v);
 });
 
+// Each order carries an ID, kept until Folio gives a definite answer. If a request times out or the
+// connection drops, pressing the button again resends the same ID, and Folio returns the order it may
+// already have placed instead of placing it twice. Changing the order starts a new ID.
+let pendingOrder = null; // { key, id }
+function clientOrderId(key) {
+  if (pendingOrder?.key !== key) pendingOrder = { key, id: crypto.randomUUID() };
+  return pendingOrder.id;
+}
+// Refusals (4xx) and Finnhub being down (503) come before anything is saved, so the next try is a new
+// order. Only an unexpected error (500) or no answer at all leaves it unclear.
+const definite = (e) => (e.status >= 400 && e.status < 500) || e.status === 503;
+
 form.addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const msg = $("#trade-msg");
@@ -1639,14 +1651,16 @@ form.addEventListener("submit", async (ev) => {
 
   const submit = $("#submit");
   submit.disabled = true;
+  const id = clientOrderId(JSON.stringify([state.portfolioId, symbol, side(), type, quantity, type === "Market" ? null : price]));
+  let placed = false;
   try {
     if (type === "Market") {
-      const t = await api("/api/trades", { method: "POST", body: JSON.stringify({ symbol, side: side(), quantity }) });
+      const t = await api("/api/trades", { method: "POST", body: JSON.stringify({ symbol, side: side(), quantity, clientOrderId: id }) });
       msg.className = "small msg up";
       msg.textContent = `${t.side === "Buy" ? "Bought" : "Sold"} ${shares.format(t.quantity)} ${t.symbol} at ${usd.format(t.price)}` +
         (t.realizedPnl != null ? ` · realized ${signed(t.realizedPnl)}` : "");
     } else {
-      const o = await api("/api/orders", { method: "POST", body: JSON.stringify({ symbol, side: side(), type, quantity, price }) });
+      const o = await api("/api/orders", { method: "POST", body: JSON.stringify({ symbol, side: side(), type, quantity, price, clientOrderId: id }) });
       msg.className = o.status === "Rejected" ? "small msg down" : "small msg up";
       msg.textContent = o.status === "Filled"
         ? `Price was already there, so your ${orderLabel(o)} filled immediately: ${shares.format(o.quantity)} ${o.symbol} at ${usd.format(o.fillPrice)}.`
@@ -1655,12 +1669,16 @@ form.addEventListener("submit", async (ev) => {
           : `Placed ${orderLabel(o)}: ${shares.format(o.quantity)} ${o.symbol} at ${usd.format(o.price)}. It's in Open orders below.`;
       if (o.status === "Open") state.knownOpenOrders?.add(o.id);
     }
+    pendingOrder = null;
+    placed = true;
     $("#qty").value = "";
     state.tradePage = 1; // show the new trade
     await load();
   } catch (e) {
+    if (definite(e)) pendingOrder = null;
     msg.className = "small msg down";
-    msg.textContent = e.message;
+    msg.textContent = placed || definite(e) ? e.message
+      : `${e.message} Folio may still have placed it: check Trade history and Orders, or press the button again. Repeating it won't place it twice.`;
   } finally {
     updateTicket();
   }
