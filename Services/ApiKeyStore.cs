@@ -74,6 +74,39 @@ public static class ApiKeyStore
         return "Encrypted the Finnhub key in your user secrets with Windows data protection.";
     }
 
+    /// <summary>
+    /// Saves <paramref name="key"/> in the user-secrets file at <paramref name="path"/>, replacing any key there: encrypted
+    /// (<see cref="ProtectedKey"/>) on Windows, plain (as <c>dotnet user-secrets set</c> writes it) elsewhere. Other
+    /// settings in the file are kept.
+    /// </summary>
+    public static void Save(string path, string key)
+    {
+        var root = new JsonObject();
+        if (File.Exists(path))
+        {
+            try { root = JsonNode.Parse(File.ReadAllText(path)) as JsonObject ?? new JsonObject(); }
+            catch (JsonException)
+            {
+                throw new SetupRejectedException($"Your user-secrets file ({path}) isn't valid JSON, so Folio won't overwrite it. Fix or delete it, then try again.");
+            }
+        }
+
+        root.Remove(PlainKey);
+        root.Remove(ProtectedKey);
+        if (root["Finnhub"] is JsonObject nested)
+        {
+            nested.Remove("ApiKey");
+            if (nested.Count == 0) root.Remove("Finnhub");
+        }
+        if (LocalProtection.IsAvailable) root[ProtectedKey] = LocalProtection.Protect(key);
+        else root[PlainKey] = key;
+
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var temp = path + ".tmp";
+        File.WriteAllText(temp, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        File.Move(temp, path, overwrite: true);
+    }
+
     private static string? ReadProtected(string? path)
     {
         if (path is null || !File.Exists(path)) return null;

@@ -8,20 +8,12 @@ Paper-trading portfolio tracker. Buy and sell real tickers with fake money at li
 
 ## Run
 
-1. Get a free API key at <https://finnhub.io/register>.
-2. Store it with user secrets (stays out of the repo):
-
-   ```sh
-   dotnet user-secrets set Finnhub:ApiKey <your-key>
-   ```
-
-   Or use an environment variable: `Finnhub__ApiKey=<your-key>`.
-3. Trust the local HTTPS certificate once (Windows asks you to confirm):
+1. Trust the local HTTPS certificate once (Windows asks you to confirm):
 
    ```sh
    dotnet dev-certs https --trust
    ```
-4. Install it (Windows):
+2. Install it (Windows):
 
    ```powershell
    powershell -ExecutionPolicy Bypass -File scripts\install.ps1
@@ -39,14 +31,19 @@ Paper-trading portfolio tracker. Buy and sell real tickers with fake money at li
    - **Uninstall:** `powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1` keeps your data. Add `-RemoveData` to delete it too.
 
    Only one Folio runs per database. Opening the shortcut again just opens the browser.
+3. Open Folio from the desktop shortcut. The first time, it asks for your **Finnhub key**:
+   - Get a free key at <https://finnhub.io/register>; it's on your Finnhub dashboard after you sign up.
+   - Paste it in and press **Save key**. Folio checks it with Finnhub and stores it encrypted (Windows data protection, readable only by your account on this PC). Prices and trading start straight away, with no restart.
+   - A key Finnhub doesn't accept is refused rather than saved. If you skip this, the banner at the top has an **Add your Finnhub key** button.
+   - You can still set the key yourself instead: `dotnet user-secrets set Finnhub:ApiKey <your-key>` (encrypted at the next start), or the environment variable `Finnhub__ApiKey`, which takes priority over a saved key.
 
 **For development**, `dotnet run` uses <https://localhost:7246> and this folder's own `folio.db`, so it never clashes with the installed copy.
 
-A new database starts with one portfolio, "My portfolio", holding $100,000. Use **Reset portfolio** to start it over with any amount, or **+ New** to add another.
+A new database starts with one portfolio, "My portfolio", holding $100,000. To start it over with any amount, use **Settings → Reset**. Use **+ New** to add another portfolio.
 
 ## How it works
 
-- **Portfolios:** each portfolio has its own cash, holdings, orders, trade history, value chart and S&P comparison. The tabs at the top show every portfolio's value and return; click one to switch, and Folio remembers your choice. **+ New** creates one with any starting cash and, optionally, trading costs. **Settings** renames the open one, changes its trading costs or deletes it (up to 20 portfolios; the last one can't be deleted, only reset). The watchlist and company data are shared. Background jobs cover every portfolio: orders fill into the portfolio they were placed in, and each portfolio gets its own value snapshots.
+- **Portfolios:** each portfolio has its own cash, holdings, orders, trade history, value chart and S&P comparison. The tabs at the top show every portfolio's value and return; click one to switch, and Folio remembers your choice. **+ New** creates one with any starting cash and, optionally, trading costs. **Settings** renames the open one or changes its trading costs. Its **Danger zone** has **Reset** (start over with new cash) and **Delete**. Both ask you to type the portfolio's name first, so one stray click can't wipe it. You can have up to 20 portfolios; the last one can't be deleted, only reset. The watchlist and company data are shared. Background jobs cover every portfolio: orders fill into the portfolio they were placed in, and each portfolio gets its own value snapshots.
 - **Orders** are market orders filled at Finnhub's latest price (`/quote`). Fractional shares are allowed, up to 4 decimals.
 - **No double orders:** the page sends an ID with every order and keeps it until Folio answers. If the connection drops or a request times out, pressing the button again resends the same ID, and Folio returns the order it already placed instead of placing it twice. A trade that went through is never reported as failed: the company lookup and chart point that follow a trade can't turn it into an error.
 - **Market hours:** trades only execute during the regular US session, 9:30 AM–4:00 PM ET on weekdays. Exchange holidays and 1:00 PM early closes (the day after Thanksgiving, Christmas Eve, July 3) are worked out from NYSE's published rules, so this needs no API calls; one-off closures announced at short notice aren't known. While the market is closed, market orders are refused and the top bar shows when it next opens. Limit and stop orders can still be placed; one that's already marketable waits for the open instead of filling on the last close. To trade around the clock at the last price, set `Folio:EnforceMarketHours` to `false`.
@@ -85,6 +82,7 @@ A new database starts with one portfolio, "My portfolio", holding $100,000. Use 
 | --- | --- | --- |
 | GET | `/api/stream` | Server-sent events: `status` (`{ connected }`) and `prices` (`{ "AAPL": { p, t } }`), at most once a second, and `alerts` (`{ version }`) when a price alert fires |
 | GET | `/api/market` | Whether the US market is open, when it closes or next opens, and the reason it's closed |
+| POST | `/api/setup/finnhub-key` | `{ "apiKey": "…" }` from the setup screen. Checked with Finnhub (one quote request), then saved encrypted and used straight away; 204 when saved, 400 with the reason when refused (malformed, not accepted by Finnhub, Finnhub unreachable, or the key comes from the `Finnhub__ApiKey` environment variable) |
 | GET | `/api/portfolios` | Every portfolio with its live value and return |
 | POST | `/api/portfolios` | `{ "name": "Growth", "startingCash": 25000, "commission": 4.95, "slippageBps": 5 }` (costs optional, default 0) |
 | PATCH | `/api/portfolios/{id}` | Any of `{ "name": "Long term", "commission": 0, "slippageBps": 10 }`; fields left out are kept |
@@ -134,7 +132,7 @@ Errors return `{ "error": "..." }`: 400 for rejected orders, 404 for an unknown 
 Folio is built to run on your own computer for one person. It has no login, so these protections keep everything else out:
 
 - **Only this computer can connect.** Kestrel listens on `localhost` (127.0.0.1 and ::1) only, set in `appsettings.json` under `Kestrel:Endpoints`. Other devices on your network can't reach it.
-- **HTTPS (against eavesdropping and tampering).** The page and API are served over HTTPS, and plain HTTP redirects to it. Calls to Finnhub use HTTPS and WSS, with normal certificate checks. Your API key stays on the server and never reaches the browser. HSTS is not sent: browsers ignore it for `localhost`, and pinning `localhost` to HTTPS would break your other local projects.
+- **HTTPS (against eavesdropping and tampering).** The page and API are served over HTTPS, and plain HTTP redirects to it. Calls to Finnhub use HTTPS and WSS, with normal certificate checks. Your API key stays on the server and never reaches the browser. The setup screen sends the key only to Folio, and Folio never sends it back. HSTS is not sent: browsers ignore it for `localhost`, and pinning `localhost` to HTTPS would break your other local projects.
 - **Other websites can't use Folio through your browser.** API requests labelled by the browser as coming from another site (`Sec-Fetch-Site` other than `same-origin`), or writes with a foreign `Origin`, get 403. This stops cross-site request forgery and pages reading your portfolio. Command-line tools like curl still work.
 - **DNS rebinding is blocked.** A malicious domain that re-points itself at 127.0.0.1 still sends its own host name, and `AllowedHosts` only accepts `localhost`, `127.0.0.1` and `[::1]`.
 - **Script injection (XSS).** A strict Content Security Policy allows scripts only from Folio itself: no inline scripts and no `eval`. Images come only from Folio, and Folio can't be framed. Everything from the server is inserted as text (`esc()`, `textContent`), and the API only returns JSON.
@@ -166,7 +164,7 @@ If you ever want Folio reachable from other devices, it needs a proper login fir
 dotnet test Folio.slnx
 ```
 
-xUnit tests in `tests/Folio.Tests` cover privacy and access (backup encryption and tampering, encrypted copies that never fall back to plain ones, the encrypted API key, the access key and its cookie over HTTP, logo source and image checks), the log file (format, daily files, pruning, concurrent writes), bad-price protection (held jumps, confirmation, the REST yardstick, no fills from a bad tick), backups (copies, pruning, off-PC copies, export/import round trip, validation, the undo backup), security (headers, HTTPS redirect, foreign host names, cross-site requests and origins, injection attempts, error output; run against the real app pipeline), multiple portfolios (separation of cash, holdings, orders and history; fills into the right portfolio; reset; validation; deletion), trading (average cost, realized P&L, rounding, rejections, invalid sides), order safety (Finnhub timeouts and unreadable replies, a failed company lookup never failing a saved trade, one slow symbol not stopping other orders, order IDs placing an order once even when sent at the same time), stock splits (forward and reverse, every portfolio, open orders, fractions, validation), timestamps from the app clock, company profile refresh, performance stats (win rate, averages, profit factor, drawdown and recovery), trading costs (fill prices, limit caps, cost basis, cash checks, settings), price alerts (direction, refusals, firing once, market hours, history, watchlist removal, splits, the stream event), live prices (merging ticks into quotes, message parsing, subscriptions, the event stream, tick-triggered fills), market hours (NYSE holidays, early closes, daylight saving, closed-market trading), limit and stop orders (trigger rules, fills, commitments, cancels, stale prices), company profiles and logos, the watchlist, trade history paging, CSV export (quoting, formula escaping, locale), reset, valuation, snapshots and the benchmark maths. They use a fake Finnhub and an in-memory SQLite database with the real migrations, so they need neither an API key nor a network connection. One optional test connects to the real Finnhub websocket when a `FINNHUB_KEY` environment variable is set; it streams a crypto pair, so it works even when US markets are closed.
+xUnit tests in `tests/Folio.Tests` cover privacy and access (backup encryption and tampering, encrypted copies that never fall back to plain ones, the encrypted API key, the access key and its cookie over HTTP, logo source and image checks), the log file (format, daily files, pruning, concurrent writes), bad-price protection (held jumps, confirmation, the REST yardstick, no fills from a bad tick), backups (copies, pruning, off-PC copies, export/import round trip, validation, the undo backup), security (headers, HTTPS redirect, foreign host names, cross-site requests and origins, injection attempts, error output; run against the real app pipeline), multiple portfolios (separation of cash, holdings, orders and history; fills into the right portfolio; reset; validation; deletion), trading (average cost, realized P&L, rounding, rejections, invalid sides), order safety (Finnhub timeouts and unreadable replies, a failed company lookup never failing a saved trade, one slow symbol not stopping other orders, order IDs placing an order once even when sent at the same time), the first-run Finnhub key (checked with Finnhub before saving, saved encrypted and read back at startup, other secrets kept, damaged files left alone, malformed, wrong and unverifiable keys refused, the environment variable respected, used at once without a restart, and other websites unable to set it), stock splits (forward and reverse, every portfolio, open orders, fractions, validation), timestamps from the app clock, company profile refresh, performance stats (win rate, averages, profit factor, drawdown and recovery), trading costs (fill prices, limit caps, cost basis, cash checks, settings), price alerts (direction, refusals, firing once, market hours, history, watchlist removal, splits, the stream event), live prices (merging ticks into quotes, message parsing, subscriptions, the event stream, tick-triggered fills), market hours (NYSE holidays, early closes, daylight saving, closed-market trading), limit and stop orders (trigger rules, fills, commitments, cancels, stale prices), company profiles and logos, the watchlist, trade history paging, CSV export (quoting, formula escaping, locale), reset, valuation, snapshots and the benchmark maths. They use a fake Finnhub and an in-memory SQLite database with the real migrations, so they need neither an API key nor a network connection. One optional test connects to the real Finnhub websocket when a `FINNHUB_KEY` environment variable is set; it streams a crypto pair, so it works even when US markets are closed.
 
 ### Page tests
 
@@ -181,6 +179,8 @@ These test the page itself (`wwwroot/app.js`). They need Node 22 or later, used 
 They cover:
 
 - **Order IDs:** each order gets one, and it's resent after a lost answer so the order is booked once. A refusal, Finnhub being down, or changing the order starts a new ID.
+- **First-run setup:** it opens when there's no key and links to Finnhub's sign-up without sending where you came from. A refused key keeps the dialog open with the reason, and a good key turns trading on without a restart.
+- **Reset and Delete:** both are in Settings, not the top bar, and stay disabled until the portfolio's name is typed exactly. Errors show in the dialog.
 - **Double-clicks:** the button is disabled while an order is on its way.
 - **Limit and stop orders**, and the closed-market rules: market orders are turned off and the page says when the market opens.
 - **The order estimate and Max.**

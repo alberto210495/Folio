@@ -76,6 +76,11 @@ builder.Services.Configure<HostOptions>(o => o.ShutdownTimeout = TimeSpan.FromSe
 
 builder.Services.AddMemoryCache();
 builder.Services.Configure<FinnhubOptions>(builder.Configuration.GetSection("Finnhub"));
+// A key entered on the page's setup screen is saved to the same user secrets (never in tests, which keep it in memory).
+builder.Services.AddSingleton(new FinnhubKeyStorage(
+    builder.Environment.IsEnvironment("Testing") ? null : ApiKeyStore.SecretsPath(),
+    FinnhubKeyStorage.EnvironmentHasKey()));
+builder.Services.AddSingleton<FinnhubKeySetup>();
 builder.Services.Configure<FolioOptions>(builder.Configuration.GetSection("Folio"));
 builder.Services.AddHttpClient<FinnhubClient>((sp, http) =>
 {
@@ -127,6 +132,7 @@ app.UseExceptionHandler(errApp => errApp.Run(async ctx =>
     (int status, string message) = ex switch
     {
         TradeRejectedException e => (400, e.Message),
+        SetupRejectedException e => (400, e.Message),
         PortfolioNotFoundException e => (404, e.Message),
         FinnhubException { Status: HttpStatusCode.TooManyRequests } e => (429, e.Message),
         FinnhubException e => (503, e.Message),
@@ -144,7 +150,7 @@ using (var scope = app.Services.CreateScope())
     await db.GetAccountAsync();
 
     if (!scope.ServiceProvider.GetRequiredService<FinnhubClient>().IsConfigured)
-        app.Logger.LogWarning("Finnhub:ApiKey is not set. Quotes and trading are disabled until you add one (see README).");
+        app.Logger.LogWarning("Finnhub:ApiKey is not set. Quotes and trading are off until you add a key on the page's setup screen.");
 }
 
 // Security (see README): headers on every response, HTTPS only, and no API calls from other websites.
@@ -227,6 +233,15 @@ api.MapDelete("/portfolios/{id:int}", async (int id, PortfoliosService p, Cancel
 
 api.MapGet("/status", (FinnhubClient f, LivePrices live, Microsoft.Extensions.Options.IOptions<FinnhubOptions> o) =>
     new { finnhubConfigured = f.IsConfigured, streaming = f.IsConfigured && o.Value.Streaming, streamConnected = live.Connected });
+
+// First-run setup: the page sends the Finnhub key the person pasted in. It's checked with Finnhub, saved encrypted
+// and used straight away. Behind the same protections as every API call (access key, same-origin checks).
+api.MapPost("/setup/finnhub-key", async (FinnhubKeyRequest req, FinnhubKeySetup setup, FinnhubClient finnhub, LivePrices live, CancellationToken ct) =>
+{
+    await setup.SaveAsync(req.ApiKey, finnhub, ct);
+    live.RequestResync();
+    return Results.NoContent();
+});
 
 api.MapGet("/market", (MarketClock m) => m.Status());
 

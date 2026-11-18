@@ -35,6 +35,15 @@ export async function openPage({ api = new FakeApi() } = {}) {
     };
   }
 
+  // A browser closes a dialog when its <form method="dialog"> is submitted (Cancel, or a button the page doesn't
+  // stop), setting returnValue to the button's value. jsdom doesn't, so do it after the page's own handlers ran.
+  window.addEventListener("submit", (ev) => {
+    const form = ev.target;
+    if (ev.defaultPrevented || form.getAttribute("method") !== "dialog") return;
+    ev.preventDefault();
+    form.closest("dialog")?.close(ev.submitter?.value ?? "");
+  });
+
   // app.js is an ES module with no imports; running it as strict code behaves the same here.
   window.eval(`"use strict";\n${appJs}\n//# sourceURL=app.js`);
 
