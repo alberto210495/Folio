@@ -12,6 +12,7 @@ export class FakeApi {
     this.overrides = [];     // one-shot scripted replies, see once()
     this.prices = { AAPL: 200, MSFT: 400, SPY: 500 };
     this.names = { AAPL: "Apple Inc", MSFT: "Microsoft Corp" };
+    this.previousCloses = {}; // yesterday's close per symbol; a dollar under the price unless set
     this.cash = 100_000;
     this.startingCash = 100_000;
     this.positions = new Map(); // symbol -> { quantity, avgCost }
@@ -124,6 +125,7 @@ export class FakeApi {
     if (route === "GET /api/performance") return ok(PERFORMANCE);
     if (route === "GET /api/alerts") return ok({ active: [], triggered: [] });
     if (route === "GET /api/search") return ok([]);
+    if (route === "GET /api/splits") return ok([]);
     if ((m = route.match(/^GET \/api\/quote\/(.+)$/))) {
       const sym = decodeURIComponent(m[1]).toUpperCase();
       return sym in this.prices ? ok(this.quote(sym)) : error(404, `No quote for ${sym}.`);
@@ -198,7 +200,12 @@ export class FakeApi {
 
   quote(symbol) {
     const price = this.prices[symbol];
-    return { symbol, price, change: 1, changePercent: 0.5, previousClose: price - 1, asOf: NOW, stale: false };
+    const previousClose = this.previousClose(symbol);
+    return { symbol, price, change: price - previousClose, changePercent: ((price - previousClose) / previousClose) * 100, previousClose, asOf: NOW, stale: false };
+  }
+
+  previousClose(symbol) {
+    return this.previousCloses[symbol] ?? this.prices[symbol] - 1;
   }
 
   holdings() {
@@ -210,7 +217,9 @@ export class FakeApi {
         symbol, name: this.names[symbol] ?? null, sector: "Technology", logo: null, quantity: p.quantity,
         avgCost: p.avgCost, costBasis, price, marketValue, unrealizedPnl: marketValue - costBasis,
         unrealizedPnlPercent: costBasis ? ((marketValue - costBasis) / costBasis) * 100 : 0,
-        dayChange: p.quantity, dayChangePercent: 0.5, previousClose: price - 1, priceStale: false,
+        dayChange: (price - this.previousClose(symbol)) * p.quantity,
+        dayChangePercent: ((price - this.previousClose(symbol)) / this.previousClose(symbol)) * 100,
+        previousClose: this.previousClose(symbol), priceStale: false,
       };
     });
   }
