@@ -118,13 +118,41 @@ public class FinnhubClient(HttpClient http, IMemoryCache cache, IOptions<Finnhub
     public static string? SafeLogo(string? url) =>
         Uri.TryCreate(url, UriKind.Absolute, out var u) && u.Scheme == Uri.UriSchemeHttps ? u.AbsoluteUri : null;
 
-    private async Task<T?> GetAsync<T>(string path, CancellationToken ct)
+    public enum KeyCheck { Valid, Rejected, Unreachable }
+
+    /// <summary>
+    /// Tries <paramref name="key"/> with one quote request, without using or saving it. Rate-limited counts as
+    /// valid: Finnhub only says that to a key it accepted. The message explains an <see cref="KeyCheck.Unreachable"/>.
+    /// </summary>
+    public async Task<(KeyCheck Result, string? Message)> CheckKeyAsync(string key, CancellationToken ct = default)
     {
-        if (!IsConfigured)
-            throw new FinnhubException("Finnhub API key is not configured. Set Finnhub:ApiKey (see README).");
+        try
+        {
+            await GetAsync<QuoteDto>("quote?symbol=AAPL", ct, key);
+            return (KeyCheck.Valid, null);
+        }
+        catch (FinnhubException ex) when (ex.Status is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            return (KeyCheck.Rejected, null);
+        }
+        catch (FinnhubException ex) when (ex.Status is HttpStatusCode.TooManyRequests)
+        {
+            return (KeyCheck.Valid, null);
+        }
+        catch (FinnhubException ex)
+        {
+            return (KeyCheck.Unreachable, ex.Message);
+        }
+    }
+
+    private async Task<T?> GetAsync<T>(string path, CancellationToken ct, string? key = null)
+    {
+        key ??= _opt.ApiKey;
+        if (string.IsNullOrWhiteSpace(key))
+            throw new FinnhubException("No Finnhub key yet. Add yours on the setup screen (Folio shows it until there's a key).");
 
         using var req = new HttpRequestMessage(HttpMethod.Get, path);
-        req.Headers.Add("X-Finnhub-Token", _opt.ApiKey);
+        req.Headers.Add("X-Finnhub-Token", key);
 
         // Every way a call can fail becomes a FinnhubException, so callers can fall back to the last known
         // price or skip a best-effort lookup. Only the caller's own cancellation gets through as itself.

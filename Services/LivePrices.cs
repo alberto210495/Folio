@@ -249,7 +249,7 @@ public class DbStreamSymbols(IServiceScopeFactory scopes, IOptions<FolioOptions>
 /// Keeps one websocket open to Finnhub (the free tier allows one per key), subscribed to the symbols
 /// the app cares about, and records every trade print in <see cref="LivePrices"/>. Reconnects with backoff.
 /// </summary>
-public class FinnhubStream(LivePrices live, IStreamSymbols symbols, IOptions<FinnhubOptions> options, ILogger<FinnhubStream> log) : BackgroundService
+public class FinnhubStream(LivePrices live, IStreamSymbols symbols, IOptions<FinnhubOptions> options, FinnhubKeySetup keys, ILogger<FinnhubStream> log) : BackgroundService
 {
     public const int MaxSymbols = 50;
     private static readonly TimeSpan ResyncEvery = TimeSpan.FromSeconds(10);
@@ -257,19 +257,32 @@ public class FinnhubStream(LivePrices live, IStreamSymbols symbols, IOptions<Fin
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var opt = options.Value;
-        if (string.IsNullOrWhiteSpace(opt.ApiKey) || !opt.Streaming) return;
+        if (!opt.Streaming) return;
+        // Without a key yet, wait for one from the setup screen instead of giving up until the next restart.
+        try { await keys.WhenSetAsync(stoppingToken); }
+        catch (OperationCanceledException) { return; }
 
         var backoff = TimeSpan.FromSeconds(1);
         while (!stoppingToken.IsCancellationRequested)
         {
             var started = DateTimeOffset.UtcNow;
+            // A key saved from the setup screen ends this session, so the stream reconnects with it right away.
+            var keyChanged = keys.KeyChanged;
+            using var session = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, keyChanged);
             try
             {
-                await RunAsync(opt, stoppingToken);
+                await RunAsync(opt, session.Token);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
                 break;
+            }
+            catch (OperationCanceledException) when (keyChanged.IsCancellationRequested)
+            {
+                log.LogInformation("Reconnecting the price stream with the new Finnhub key");
+                live.Connected = false;
+                backoff = TimeSpan.FromSeconds(1);
+                continue;
             }
             catch (Exception ex)
             {

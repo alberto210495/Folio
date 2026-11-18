@@ -292,6 +292,17 @@ dialog::backdrop { background: rgba(0, 0, 0, .7); backdrop-filter: blur(2px); }
 .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .dlg-actions.spread { justify-content: space-between; }
 .dlg-actions.spread > span { display: flex; gap: 8px; }
+
+/* First-run setup: two numbered steps above the key field. */
+.setup-steps { margin: 4px 0 12px; padding-left: 20px; display: grid; gap: 6px; }
+.setup-steps a { color: var(--accent); font-weight: 600; }
+
+/* Reset and Delete live here, out of the way, behind typing the portfolio's name. */
+.danger-zone { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
+.danger-zone h3 { margin: 0 0 8px; font-size: 13px; color: var(--down); }
+.danger-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 0; }
+.danger-row > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.danger-row .btn { flex: none; }
 .dlg .msg:empty { display: none; }
 
 /* Performance */
