@@ -17,6 +17,9 @@ updates:
         update-types: [version-update:semver-major]
       - dependency-name: "Microsoft.AspNetCore.*"
         update-types: [version-update:semver-major]
+      # Encrypts your Finnhub key and backup passphrase; keep it on the .NET 10 line with everything else.
+      - dependency-name: "System.Security.Cryptography.ProtectedData"
+        update-types: [version-update:semver-major]
 
   # jsdom, for the page tests in tests/web (dev-only; nothing from npm ships with Folio).
   - package-ecosystem: npm

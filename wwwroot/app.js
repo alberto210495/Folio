@@ -59,7 +59,8 @@ async function api(path, opts = {}) {
   const body = await res.json().catch(() => null);
   if (res.status === 401) {
     // The access cookie is missing or the key changed: reopening from the shortcut or tray unlocks again.
-    banner("Folio is locked. Open it from the <b>Folio</b> shortcut on your desktop or <b>Open Folio</b> on the tray icon.");
+    banner("Folio is locked. Open it from the <b>Folio</b> shortcut on your desktop or <b>Open Folio</b> on the tray icon, and you're back in. " +
+      "This happens when this browser's unlock runs out (after 400 days), its cookies were cleared, or Folio's access key was changed.");
   }
   if (!res.ok) throw Object.assign(new Error(body?.error || `Request failed (${res.status})`), { status: res.status });
   return body;
@@ -907,9 +908,13 @@ function renderHoldings(p) {
   }
   tbody.innerHTML = p.holdings.map((h) => {
     const c = holdingCells(h, p.totalValue);
+    const hint = splitHint(h);
+    const hintBtn = hint
+      ? `<button type="button" class="split-hint" data-split="${esc(h.symbol)}" data-to="${hint.to}" data-from="${hint.from}" title="Splits aren't detected automatically. If ${esc(h.symbol)} split, record it so your shares and cost are right.">${esc(hint.label)}</button>`
+      : "";
     return `
     <tr data-sym="${esc(h.symbol)}">
-      <td><div class="sym-cell">${logo(h.symbol, h.logo)}<div class="sym-text"><span class="sym">${esc(h.symbol)}</span>${h.priceStale ? `<span class="stale">stale</span>` : ""}<span class="co">${esc(h.name || h.sector)}</span></div></div></td>
+      <td><div class="sym-cell">${logo(h.symbol, h.logo)}<div class="sym-text"><span class="sym">${esc(h.symbol)}</span>${h.priceStale ? `<span class="stale">stale</span>` : ""}<span class="co">${esc(h.name || h.sector)}</span>${hintBtn}</div></div></td>
       <td class="num">${shares.format(h.quantity)}</td>
       <td class="num">${usd.format(h.avgCost)}</td>
       <td class="num" data-f="price">${c.price}</td>
@@ -920,6 +925,20 @@ function renderHoldings(p) {
       <td class="num"><button class="btn xs" data-trade="${esc(h.symbol)}" data-side="Buy">Buy</button> <button class="btn xs" data-trade="${esc(h.symbol)}" data-side="Sell" data-qty="${h.quantity}">Sell</button> <button class="btn xs ghost" type="button" data-split="${esc(h.symbol)}" title="Record a stock split">Split</button></td>
     </tr>`;
   }).join("");
+}
+
+/**
+ * Splits aren't detected automatically (Finnhub's free tier has no split data), so a split looks like a crash.
+ * A holding down 40% or more since yesterday's close (or up 80%+, for a reverse split) gets a question that
+ * opens the split dialog with the likely ratio: down 50% suggests 2-for-1, down 75% suggests 4-for-1.
+ */
+function splitHint(h) {
+  if (h.priceStale || !(h.price > 0) || !(h.previousClose > 0)) return null;
+  const r = h.price / h.previousClose;
+  const move = pct.format(Math.abs(r - 1));
+  if (r <= 0.6) return { label: `Down ${move} today. Was it a split?`, to: Math.max(2, Math.round(1 / r)), from: 1 };
+  if (r >= 1.8) return { label: `Up ${move} today. Was it a reverse split?`, to: 1, from: Math.max(2, Math.round(r)) };
+  return null;
 }
 
 /** Cell contents shared by the full render and live patching. */
@@ -945,7 +964,7 @@ function openTicket(sym, sideName, qty = "") {
 
 $("#holdings").addEventListener("click", (ev) => {
   const split = ev.target.closest("[data-split]");
-  if (split) return openSplit(split.dataset.split);
+  if (split) return openSplit(split.dataset.split, Number(split.dataset.to) || 2, Number(split.dataset.from) || 1);
   const btn = ev.target.closest("[data-trade]");
   if (btn) openTicket(btn.dataset.trade, btn.dataset.side, btn.dataset.qty || "");
 });
@@ -967,11 +986,12 @@ function paintSplitPreview() {
   el.textContent = `In this portfolio: ${shares.format(h.quantity)} shares at ${usd.format(h.avgCost)} become ${shares.format(qty)} at ${usd.format(h.avgCost * from / to)}.`;
 }
 
-async function openSplit(sym) {
+/** Opens the split dialog for <sym>, starting at <to>-for-<from> (2-for-1 unless a big move suggests another). */
+async function openSplit(sym, to = 2, from = 1) {
   splitSym = sym;
   $("#split-sym").textContent = sym;
-  $("#split-to").value = 2;
-  $("#split-from").value = 1;
+  $("#split-to").value = to;
+  $("#split-from").value = from;
   $("#split-msg").textContent = "";
   $("#split-prev").textContent = "";
   paintSplitPreview();
@@ -1481,6 +1501,7 @@ function updateTicket() {
     ? HINTS[`${s}|${type}`](limitPrice > 0 ? usd.format(limitPrice) : "your price") + " Fills at the market price when triggered." +
       (closed ? ` The market is closed, so it's checked from ${opens}.` : "")
     : closed ? `The market is closed until ${opens}. Market orders open then; you can place a limit or stop order now.` : "";
+  if (closed && !resting) hint.append(" ", fixButton("Use a limit order", useLimitOrder));
 
   const q = state.quote;
   const qty = parseFloat($("#qty").value);
@@ -1631,6 +1652,59 @@ symbolInput.addEventListener("blur", () => {
   if (v && v !== state.quote?.symbol) selectSymbol(v);
 });
 
+// ---------- Refusals that come with their fix ----------
+// When Folio refuses an order for a reason the form can fix, the message gets a button that does it. The order is
+// never placed for you: the button sets the form up, and you press Buy or Sell yourself.
+
+function fixButton(label, run) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "btn xs fix";
+  b.textContent = label;
+  b.addEventListener("click", run);
+  return b;
+}
+
+function tell(text) {
+  const msg = $("#trade-msg");
+  msg.className = "small msg";
+  msg.textContent = text;
+}
+
+function useLimitOrder() {
+  form.querySelector("input[name=otype][value=Limit]").click(); // fills in the current price
+  const at = state.quote ? ` at ${usd.format(state.quote.price)}, the current price` : "";
+  tell(`Switched to a limit order${at}. Change the price if you like, then press ${$("#submit").textContent}.`);
+  $("#price").focus();
+}
+
+function useMax() {
+  form.querySelector("[data-max]").click();
+  const qty = parseFloat($("#qty").value);
+  tell(qty > 0
+    ? `Set to ${shares.format(qty)} shares, the most your cash covers. Press ${$("#submit").textContent} to place it.`
+    : "Your cash doesn't cover a single share at this price.");
+}
+
+function sellAll() {
+  const held = heldQty(state.quote?.symbol);
+  $("#qty").value = held;
+  updateTicket();
+  tell(`Set to all ${shares.format(held)} shares you hold. Press ${$("#submit").textContent} to place it.`);
+}
+
+/** The fix for a refusal, matched on the server's message (OrderService and TradingService word these). */
+function fixFor(message) {
+  if (/^The market is closed/.test(message) && otype() === "Market")
+    return { label: "Use a limit order", run: useLimitOrder };
+  if (/^(Insufficient cash|Order needs about)/.test(message) && side() === "Buy" && state.quote)
+    return { label: "Buy the most I can", run: useMax };
+  const held = heldQty(state.quote?.symbol);
+  if (/^You only hold/.test(message) && side() === "Sell" && held > 0)
+    return { label: `Sell all ${shares.format(held)}`, run: sellAll };
+  return null;
+}
+
 // Each order carries an ID, kept until Folio gives a definite answer. If a request times out or the
 // connection drops, pressing the button again resends the same ID, and Folio returns the order it may
 // already have placed instead of placing it twice. Changing the order starts a new ID.
@@ -1685,6 +1759,8 @@ form.addEventListener("submit", async (ev) => {
     msg.className = "small msg down";
     msg.textContent = placed || definite(e) ? e.message
       : `${e.message} Folio may still have placed it: check Trade history and Orders, or press the button again. Repeating it won't place it twice.`;
+    const fix = !placed && definite(e) ? fixFor(e.message) : null;
+    if (fix) msg.append(" ", fixButton(fix.label, fix.run));
   } finally {
     updateTicket();
   }

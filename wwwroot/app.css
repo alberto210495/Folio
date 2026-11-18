@@ -102,7 +102,8 @@ button, input, select { font: inherit; color: inherit; }
 .kpi-value.sm { font-size: 20px; font-weight: 400; }
 .kpi-sub { font-variant-numeric: tabular-nums; font-size: 12.5px; margin-top: 6px; }
 
-.grid { display: grid; grid-template-columns: minmax(280px, 360px) 1fr; gap: 20px; }
+/* Order form beside holdings. Each keeps its own height, so a short holdings list isn't stretched into an empty box. */
+.grid { display: grid; grid-template-columns: minmax(280px, 360px) 1fr; gap: 20px; align-items: start; }
 
 /* Order ticket */
 .seg { display: grid; grid-template-columns: 1fr 1fr; background: var(--surface-2); border-radius: 9px; padding: 3px; margin-bottom: 16px; }
@@ -292,6 +293,14 @@ dialog::backdrop { background: rgba(0, 0, 0, .7); backdrop-filter: blur(2px); }
 .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .dlg-actions.spread { justify-content: space-between; }
 .dlg-actions.spread > span { display: flex; gap: 8px; }
+
+/* A refusal's one-click fix, inline after the message. */
+.btn.fix { margin-left: 4px; vertical-align: baseline; }
+
+/* "Down 50% today. Was it a split?" under a holding's name. */
+.split-hint { display: block; margin-top: 3px; padding: 1px 6px; font: inherit; font-size: 11px; text-align: left; cursor: pointer;
+  color: var(--warn-ink); background: var(--warn-bg); border: 1px solid var(--border-strong); border-radius: 4px; }
+.split-hint:hover { border-color: var(--accent); }
 
 /* First-run setup: two numbered steps above the key field. */
 .setup-steps { margin: 4px 0 12px; padding-left: 20px; display: grid; gap: 6px; }
