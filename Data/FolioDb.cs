@@ -55,6 +55,13 @@ public class FolioDb(DbContextOptions<FolioDb> options) : DbContext(options)
         b.Entity<Order>().Property(o => o.Status).HasConversion<string>().HasMaxLength(9);
         b.Entity<Order>().Property(o => o.Reason).HasMaxLength(300);
 
+        // The page's own ID for each order. Unique per portfolio, so a retried request can't trade twice even
+        // if two copies race (SQLite treats NULLs as distinct, so rows without one never clash).
+        b.Entity<Trade>().Property(t => t.ClientOrderId).HasMaxLength(64);
+        b.Entity<Trade>().HasIndex(t => new { t.AccountId, t.ClientOrderId }).IsUnique();
+        b.Entity<Order>().Property(o => o.ClientOrderId).HasMaxLength(64);
+        b.Entity<Order>().HasIndex(o => new { o.AccountId, o.ClientOrderId }).IsUnique();
+
         b.Entity<WatchlistItem>().HasKey(w => w.Symbol);
         b.Entity<WatchlistItem>().Property(w => w.Symbol).HasMaxLength(20);
         b.Entity<WatchlistItem>().HasIndex(w => w.AddedAt);

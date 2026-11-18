@@ -259,8 +259,7 @@ api.MapPost("/orders", async (PlaceOrderRequest req, OrderService o, SnapshotSer
 {
     var order = await o.PlaceAsync(req, ct);
     live.RequestResync(); // stream the order's symbol so it can trigger on the next tick
-    if (order.Status == OrderStatus.Filled)
-        try { await s.RecordAsync(ct); } catch (FinnhubException) { /* best-effort */ }
+    if (order.Status == OrderStatus.Filled) await snapshotAfterTrade(s, ct);
     return Results.Created($"/api/orders/{order.Id}", order);
 });
 
@@ -270,9 +269,20 @@ api.MapPost("/trades", async (TradeRequest req, TradingService t, SnapshotServic
 {
     var trade = await t.ExecuteAsync(req, ct);
     live.RequestResync();
-    try { await s.RecordAsync(ct); } catch (FinnhubException) { /* chart point is best-effort */ }
+    await snapshotAfterTrade(s, ct);
     return Results.Created("/api/trades", trade);
 });
+
+// The chart point after a trade is best-effort. The trade is saved by then, so a failure here must not
+// come back as an error: the page would report the trade as failed and you might place it again.
+async Task snapshotAfterTrade(SnapshotService s, CancellationToken ct)
+{
+    try { await s.RecordAsync(ct); }
+    catch (Exception ex) when (!ct.IsCancellationRequested)
+    {
+        app.Logger.LogWarning(ex, "Couldn't save a value snapshot after a trade");
+    }
+}
 
 // Stock splits apply to every portfolio, so they ignore ?portfolio.
 api.MapGet("/splits", (string? symbol, TradingService t, CancellationToken ct) => t.ListSplitsAsync(symbol, ct));

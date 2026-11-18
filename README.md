@@ -48,6 +48,7 @@ A new database starts with one portfolio, "My portfolio", holding $100,000. Use 
 
 - **Portfolios:** each portfolio has its own cash, holdings, orders, trade history, value chart and S&P comparison. The tabs at the top show every portfolio's value and return; click one to switch, and Folio remembers your choice. **+ New** creates one with any starting cash and, optionally, trading costs. **Settings** renames the open one, changes its trading costs or deletes it (up to 20 portfolios; the last one can't be deleted, only reset). The watchlist and company data are shared. Background jobs cover every portfolio: orders fill into the portfolio they were placed in, and each portfolio gets its own value snapshots.
 - **Orders** are market orders filled at Finnhub's latest price (`/quote`). Fractional shares are allowed, up to 4 decimals.
+- **No double orders:** the page sends an ID with every order and keeps it until Folio answers. If the connection drops or a request times out, pressing the button again resends the same ID, and Folio returns the order it already placed instead of placing it twice. A trade that went through is never reported as failed: the company lookup and chart point that follow a trade can't turn it into an error.
 - **Market hours:** trades only execute during the regular US session, 9:30 AM–4:00 PM ET on weekdays. Exchange holidays and 1:00 PM early closes (the day after Thanksgiving, Christmas Eve, July 3) are worked out from NYSE's published rules, so this needs no API calls; one-off closures announced at short notice aren't known. While the market is closed, market orders are refused and the top bar shows when it next opens. Limit and stop orders can still be placed; one that's already marketable waits for the open instead of filling on the last close. To trade around the clock at the last price, set `Folio:EnforceMarketHours` to `false`.
 - **Live prices:** Folio keeps one websocket open to Finnhub (the free tier allows one connection and 50 symbols) and streams trade prices for your holdings, open orders, SPY, your watchlist and the symbol in the order form, in that order of priority. The page receives them about once a second over server-sent events (`/api/stream`), so your API key never reaches the browser. Prices update in place with a brief green or red flash, and a **Live** badge shows in the top bar while the market is open. The value chart's last point, and its S&P line, follow live prices too, redrawn at most every 5 seconds and never while you're reading its tooltip. Streamed prices are layered over the REST quote everywhere: valuations, market orders and order fills all use the latest trade. Prints outside regular hours are ignored unless `Folio:EnforceMarketHours` is off. If the stream drops, Folio reconnects with backoff and falls back to the 15-second REST quotes meanwhile. Set `Finnhub:Streaming` to `false` to turn streaming off.
 - **Bad-price protection:** a streamed price more than 20% away from the last good one is held back. The last good price is the previous trade or, before any trades, the REST quote. A held price is used only if a second trade within 1% of it arrives within 2 minutes. Genuine big moves, like an earnings gap, get through a moment later; one-off bad prints never reach valuations, order fills or price alerts.
@@ -89,9 +90,9 @@ A new database starts with one portfolio, "My portfolio", holding $100,000. Use 
 | PATCH | `/api/portfolios/{id}` | Any of `{ "name": "Long term", "commission": 0, "slippageBps": 10 }`; fields left out are kept |
 | DELETE | `/api/portfolios/{id}` | Deletes the portfolio and everything in it (not the last one) |
 | GET | `/api/portfolio` | Cash, holdings with live P&L, totals |
-| POST | `/api/trades` | `{ "symbol": "AAPL", "side": "Buy" \| "Sell", "quantity": 10 }` |
+| POST | `/api/trades` | `{ "symbol": "AAPL", "side": "Buy" \| "Sell", "quantity": 10, "clientOrderId": "…" }`. `clientOrderId` is optional (1–64 letters, digits, `-` or `_`, unique per portfolio): sending it again returns the trade already placed, and reusing it for a different order is refused |
 | GET | `/api/trades?page=1&pageSize=25` | One page of trade history, newest first: `{ items, total, page, pageSize, pages }`. `pageSize` is 1–200; a page past the end returns the last page. Each item's `orderType` is `Market`, `Limit` or `Stop`; `price` is the fill price after slippage, with `commission` and `slippage` in dollars |
-| POST | `/api/orders` | `{ "symbol": "AAPL", "side": "Buy", "type": "Limit" \| "Stop", "quantity": 10, "price": 190 }` |
+| POST | `/api/orders` | `{ "symbol": "AAPL", "side": "Buy", "type": "Limit" \| "Stop", "quantity": 10, "price": 190, "clientOrderId": "…" }` (`clientOrderId` optional, as for trades) |
 | GET | `/api/orders?status=open` | `status` is `open`, `closed` or `all`; open orders include `currentPrice` |
 | DELETE | `/api/orders/{id}` | Cancel an open order |
 | POST | `/api/splits` | `{ "symbol": "AAPL", "from": 1, "to": 4 }` for a 4-for-1 split (ratios 1–1000). Applies to every portfolio; returns the holdings and orders adjusted |
@@ -116,7 +117,7 @@ A new database starts with one portfolio, "My portfolio", holding $100,000. Use 
 
 Portfolio-specific endpoints (portfolio, trades, orders, history, exports, reset, and the watchlist's shares held) work on the portfolio given by `?portfolio=<id>`, or the first portfolio when it's omitted.
 
-Errors return `{ "error": "..." }`: 400 for rejected orders, 404 for an unknown portfolio, 429 or 503 for Finnhub problems.
+Errors return `{ "error": "..." }`: 400 for rejected orders, 404 for an unknown portfolio, 429 or 503 for Finnhub problems (unreachable, rate-limited, too slow to answer, or an unreadable reply). None of these mean an order was placed.
 
 ## Backups
 
@@ -165,13 +166,34 @@ If you ever want Folio reachable from other devices, it needs a proper login fir
 dotnet test Folio.slnx
 ```
 
-xUnit tests in `tests/Folio.Tests` cover privacy and access (backup encryption and tampering, encrypted copies that never fall back to plain ones, the encrypted API key, the access key and its cookie over HTTP, logo source and image checks), the log file (format, daily files, pruning, concurrent writes), bad-price protection (held jumps, confirmation, the REST yardstick, no fills from a bad tick), backups (copies, pruning, off-PC copies, export/import round trip, validation, the undo backup), security (headers, HTTPS redirect, foreign host names, cross-site requests and origins, injection attempts, error output; run against the real app pipeline), multiple portfolios (separation of cash, holdings, orders and history; fills into the right portfolio; reset; validation; deletion), trading (average cost, realized P&L, rounding, rejections, invalid sides), stock splits (forward and reverse, every portfolio, open orders, fractions, validation), timestamps from the app clock, company profile refresh, performance stats (win rate, averages, profit factor, drawdown and recovery), trading costs (fill prices, limit caps, cost basis, cash checks, settings), price alerts (direction, refusals, firing once, market hours, history, watchlist removal, splits, the stream event), live prices (merging ticks into quotes, message parsing, subscriptions, the event stream, tick-triggered fills), market hours (NYSE holidays, early closes, daylight saving, closed-market trading), limit and stop orders (trigger rules, fills, commitments, cancels, stale prices), company profiles and logos, the watchlist, trade history paging, CSV export (quoting, formula escaping, locale), reset, valuation, snapshots and the benchmark maths. They use a fake Finnhub and an in-memory SQLite database with the real migrations, so they need neither an API key nor a network connection. One optional test connects to the real Finnhub websocket when a `FINNHUB_KEY` environment variable is set; it streams a crypto pair, so it works even when US markets are closed.
+xUnit tests in `tests/Folio.Tests` cover privacy and access (backup encryption and tampering, encrypted copies that never fall back to plain ones, the encrypted API key, the access key and its cookie over HTTP, logo source and image checks), the log file (format, daily files, pruning, concurrent writes), bad-price protection (held jumps, confirmation, the REST yardstick, no fills from a bad tick), backups (copies, pruning, off-PC copies, export/import round trip, validation, the undo backup), security (headers, HTTPS redirect, foreign host names, cross-site requests and origins, injection attempts, error output; run against the real app pipeline), multiple portfolios (separation of cash, holdings, orders and history; fills into the right portfolio; reset; validation; deletion), trading (average cost, realized P&L, rounding, rejections, invalid sides), order safety (Finnhub timeouts and unreadable replies, a failed company lookup never failing a saved trade, one slow symbol not stopping other orders, order IDs placing an order once even when sent at the same time), stock splits (forward and reverse, every portfolio, open orders, fractions, validation), timestamps from the app clock, company profile refresh, performance stats (win rate, averages, profit factor, drawdown and recovery), trading costs (fill prices, limit caps, cost basis, cash checks, settings), price alerts (direction, refusals, firing once, market hours, history, watchlist removal, splits, the stream event), live prices (merging ticks into quotes, message parsing, subscriptions, the event stream, tick-triggered fills), market hours (NYSE holidays, early closes, daylight saving, closed-market trading), limit and stop orders (trigger rules, fills, commitments, cancels, stale prices), company profiles and logos, the watchlist, trade history paging, CSV export (quoting, formula escaping, locale), reset, valuation, snapshots and the benchmark maths. They use a fake Finnhub and an in-memory SQLite database with the real migrations, so they need neither an API key nor a network connection. One optional test connects to the real Finnhub websocket when a `FINNHUB_KEY` environment variable is set; it streams a crypto pair, so it works even when US markets are closed.
+
+### Page tests
+
+```sh
+cd tests/web
+npm ci --ignore-scripts
+npm test
+```
+
+These test the page itself (`wwwroot/app.js`). They need Node 22 or later, used only for testing: Folio has no build step and ships no Node code. Each test opens the real `index.html` and `app.js` in [jsdom](https://github.com/jsdom/jsdom), a browser simulation for Node, against a fake Folio API (`tests/web/fake-api.js`) with the same JSON shapes as the server. The tests then use the page like a person: picking a symbol, typing a quantity, pressing Buy.
+
+They cover:
+
+- **Order IDs:** each order gets one, and it's resent after a lost answer so the order is booked once. A refusal, Finnhub being down, or changing the order starts a new ID.
+- **Double-clicks:** the button is disabled while an order is on its way.
+- **Limit and stop orders**, and the closed-market rules: market orders are turned off and the page says when the market opens.
+- **The order estimate and Max.**
+- **Server text is shown as text**, never run as HTML.
+- **The locked-Folio banner**, and every request naming the open portfolio.
+
+jsdom has no layout and doesn't enforce the Content Security Policy, so these tests check behaviour, not looks. The security tests above cover the CSP against the real server.
 
 ## Continuous integration
 
 GitHub Actions run on every push and pull request to `main`:
 
-- **CI** (`.github/workflows/ci.yml`) builds Folio, runs every test, and fails if a package has a known vulnerability. It needs no secrets: the live Finnhub test skips itself.
+- **CI** (`.github/workflows/ci.yml`) builds Folio, runs every test, and fails if a package has a known vulnerability. It needs no secrets: the live Finnhub test skips itself. A second job runs the page tests on Node 24 and audits their npm packages.
 - **CodeQL** (`.github/workflows/codeql.yml`) scans the C# and JavaScript for security issues, and also runs weekly. Results are under the repository's **Security → Code scanning** tab.
 - **Dependabot** (`.github/dependabot.yml`) opens weekly pull requests for package and action updates. It stays on .NET 10 (EF Core and ASP.NET Core 11 need .NET 11).
 

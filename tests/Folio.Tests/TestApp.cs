@@ -22,6 +22,12 @@ public sealed class FakeFinnhub : HttpMessageHandler
     public int ProfileCalls { get; private set; }
     public HttpStatusCode FailureStatus { get; set; } = HttpStatusCode.TooManyRequests;
 
+    public enum Fault { Timeout, BadJson }
+    /// <summary>Symbols whose /quote times out (like HttpClient's timeout) or answers with something that isn't JSON.</summary>
+    public Dictionary<string, Fault> QuoteFaults { get; } = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>The same for /stock/profile2.</summary>
+    public Dictionary<string, Fault> ProfileFaults { get; } = new(StringComparer.OrdinalIgnoreCase);
+
     private object Profile(string symbol)
     {
         ProfileCalls++;
@@ -35,6 +41,15 @@ public sealed class FakeFinnhub : HttpMessageHandler
 
         if (Failing.Contains(symbol))
             return Task.FromResult(new HttpResponseMessage(FailureStatus));
+
+        var faults = path.EndsWith("/quote") ? QuoteFaults : path.EndsWith("/stock/profile2") ? ProfileFaults : null;
+        if (faults is not null && faults.TryGetValue(symbol, out var fault))
+            return fault == Fault.Timeout
+                ? Task.FromException<HttpResponseMessage>(new TaskCanceledException("The request timed out.", new TimeoutException()))
+                : Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("<html>Bad gateway</html>", Encoding.UTF8, "application/json"),
+                });
 
         object body = path switch
         {
@@ -134,7 +149,8 @@ public sealed class TestApp : IDisposable
         public Task<OrderView> Place(string symbol, TradeSide side, OrderType type, decimal qty, decimal price) =>
             Orders.PlaceAsync(new(symbol, side, type, qty, price));
 
-        public Task<Trade> Buy(string symbol, decimal qty) => Trading.ExecuteAsync(new(symbol, TradeSide.Buy, qty));
+        public Task<Trade> Buy(string symbol, decimal qty, string? clientOrderId = null) =>
+            Trading.ExecuteAsync(new(symbol, TradeSide.Buy, qty, clientOrderId));
         public Task<Trade> Sell(string symbol, decimal qty) => Trading.ExecuteAsync(new(symbol, TradeSide.Sell, qty));
 
         public void Dispose() => Db.Dispose();

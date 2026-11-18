@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
@@ -125,18 +126,11 @@ public class FinnhubClient(HttpClient http, IMemoryCache cache, IOptions<Finnhub
         using var req = new HttpRequestMessage(HttpMethod.Get, path);
         req.Headers.Add("X-Finnhub-Token", _opt.ApiKey);
 
-        HttpResponseMessage res;
+        // Every way a call can fail becomes a FinnhubException, so callers can fall back to the last known
+        // price or skip a best-effort lookup. Only the caller's own cancellation gets through as itself.
         try
         {
-            res = await http.SendAsync(req, ct);
-        }
-        catch (HttpRequestException ex)
-        {
-            throw new FinnhubException($"Could not reach Finnhub: {ex.Message}");
-        }
-
-        using (res)
-        {
+            using var res = await http.SendAsync(req, ct);
             if (res.StatusCode == HttpStatusCode.TooManyRequests)
                 throw new FinnhubException("Finnhub rate limit reached. Try again in a minute.", res.StatusCode);
             if (res.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
@@ -145,6 +139,19 @@ public class FinnhubClient(HttpClient http, IMemoryCache cache, IOptions<Finnhub
                 throw new FinnhubException($"Finnhub returned {(int)res.StatusCode}.", res.StatusCode);
 
             return await res.Content.ReadFromJsonAsync<T>(ct);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new FinnhubException($"Could not reach Finnhub: {ex.Message}");
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // HttpClient's timeout surfaces as a cancellation nobody asked for.
+            throw new FinnhubException("Finnhub took too long to answer.");
+        }
+        catch (JsonException)
+        {
+            throw new FinnhubException("Finnhub sent a reply Folio couldn't read.");
         }
     }
 

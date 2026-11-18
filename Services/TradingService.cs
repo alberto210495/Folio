@@ -4,7 +4,11 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Folio.Services;
 
-public record TradeRequest(string Symbol, TradeSide Side, decimal Quantity);
+/// <param name="ClientOrderId">
+/// Optional ID the caller makes up for this order (up to 64 letters, digits, '-' or '_'). Sending the same ID again
+/// returns the trade it already placed instead of trading twice, so a retry after a timeout is safe.
+/// </param>
+public record TradeRequest(string Symbol, TradeSide Side, decimal Quantity, string? ClientOrderId = null);
 
 public record SplitRequest(string Symbol, int From, int To);
 
@@ -29,6 +33,21 @@ public partial class TradingService(FolioDb db, FinnhubClient finnhub, MarketClo
     [GeneratedRegex(@"^[A-Z0-9][A-Z0-9.\-]{0,19}$")]
     private static partial Regex SymbolPattern();
 
+    public const int MaxClientOrderIdLength = 64;
+
+    [GeneratedRegex(@"^[A-Za-z0-9_\-]{1,64}$")]
+    private static partial Regex ClientOrderIdPattern();
+
+    /// <summary>The caller's order ID, or null when none was sent.</summary>
+    public static string? ValidateClientOrderId(string? id) =>
+        id is null ? null
+        : ClientOrderIdPattern().IsMatch(id) ? id
+        : throw new TradeRejectedException($"Order ID must be 1 to {MaxClientOrderIdLength} letters, digits, '-' or '_'.");
+
+    /// <summary>The ID was used before: fine for the same order (a retry), refused for a different one.</summary>
+    public static TradeRejectedException ReusedOrderId() =>
+        new("This order ID was already used for a different order. Reload the page and try again.");
+
     private DateTime Now => time.GetUtcNow().UtcDateTime;
 
     public static string NormalizeSymbol(string? symbol)
@@ -47,12 +66,25 @@ public partial class TradingService(FolioDb db, FinnhubClient finnhub, MarketClo
         var symbol = NormalizeSymbol(request.Symbol);
         var side = ValidateSide(request.Side);
         var qty = ValidateQuantity(request.Quantity);
+        var clientOrderId = ValidateClientOrderId(request.ClientOrderId);
+
+        // A retry of an order that already went through gets the same answer, even if the market has
+        // closed or Finnhub is down since. FillAsync checks again under the trade lock.
+        if (clientOrderId is not null && await FindTradeAsync(portfolio.Id, clientOrderId, ct) is { } earlier)
+            return SameTrade(earlier, symbol, side, qty);
+
         if (!clock.CanTrade())
             throw new TradeRejectedException(
                 $"The market is closed. It opens {clock.DescribeNextOpen()}. You can place a limit order now; it's checked once the market opens.");
         var quote = await LiveQuoteAsync(symbol, ct);
-        return await FillAsync(portfolio.Id, symbol, side, qty, quote.Price, ct: ct);
+        return await FillAsync(portfolio.Id, symbol, side, qty, quote.Price, clientOrderId: clientOrderId, ct: ct);
     }
+
+    private Task<Trade?> FindTradeAsync(int accountId, string clientOrderId, CancellationToken ct) =>
+        db.Trades.AsNoTracking().FirstOrDefaultAsync(t => t.AccountId == accountId && t.ClientOrderId == clientOrderId, ct);
+
+    private static Trade SameTrade(Trade earlier, string symbol, TradeSide side, decimal qty) =>
+        earlier.Symbol == symbol && earlier.Side == side && earlier.Quantity == qty ? earlier : throw ReusedOrderId();
 
     public static decimal ValidateQuantity(decimal qty)
     {
@@ -97,16 +129,22 @@ public partial class TradingService(FolioDb db, FinnhubClient finnhub, MarketClo
     /// Books a fill in portfolio <paramref name="accountId"/> at the <paramref name="marketPrice"/> adjusted for the
     /// portfolio's slippage, and charges its commission. Pass <paramref name="limit"/> for a limit order so slippage
     /// never takes the fill past it. <paramref name="beforeSave"/> runs inside the same transaction (used to mark a
-    /// resting order filled atomically with its trade).
+    /// resting order filled atomically with its trade). A <paramref name="clientOrderId"/> that already has a trade
+    /// returns that trade instead of trading again.
     /// </summary>
     public async Task<Trade> FillAsync(
         int accountId, string symbol, TradeSide side, decimal qty, decimal marketPrice,
-        int? orderId = null, Action<Trade>? beforeSave = null, decimal? limit = null, CancellationToken ct = default)
+        int? orderId = null, Action<Trade>? beforeSave = null, decimal? limit = null, string? clientOrderId = null,
+        CancellationToken ct = default)
     {
         ValidateSide(side);
+        Trade trade;
         await TradeLock.WaitAsync(ct);
         try
         {
+            if (clientOrderId is not null && await FindTradeAsync(accountId, clientOrderId, ct) is { } earlier)
+                return SameTrade(earlier, symbol, side, qty);
+
             await using var tx = await db.Database.BeginTransactionAsync(ct);
             var account = await db.GetAccountAsync(accountId, ct);
             var position = await db.Positions.SingleOrDefaultAsync(p => p.AccountId == accountId && p.Symbol == symbol, ct);
@@ -115,9 +153,10 @@ public partial class TradingService(FolioDb db, FinnhubClient finnhub, MarketClo
             var fee = account.Commission;
             var now = Now;
 
-            var trade = new Trade
+            trade = new Trade
             {
                 AccountId = accountId, Symbol = symbol, Side = side, Quantity = qty, Price = price, OrderId = orderId, ExecutedAt = now,
+                ClientOrderId = clientOrderId,
                 Commission = fee,
                 Slippage = Money(Math.Abs(price - marketPrice) * qty),
             };
@@ -162,13 +201,27 @@ public partial class TradingService(FolioDb db, FinnhubClient finnhub, MarketClo
             beforeSave?.Invoke(trade);
             await db.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
-
-            if (side == TradeSide.Buy) await EnsureCompanyAsync(symbol, ct);
-            return trade;
         }
         finally
         {
             TradeLock.Release();
+        }
+
+        // Outside the lock, so a slow profile lookup doesn't hold up other trades.
+        if (side == TradeSide.Buy) await NoteCompanyAsync(symbol, ct);
+        return trade;
+    }
+
+    /// <summary>
+    /// The company lookup after a buy. The trade is already saved, so nothing here may surface as an error:
+    /// the caller would think the trade failed, retry, and buy twice.
+    /// </summary>
+    private async Task NoteCompanyAsync(string symbol, CancellationToken ct)
+    {
+        try { await EnsureCompanyAsync(symbol, ct); }
+        catch (Exception ex)
+        {
+            log.LogWarning(ex, "Couldn't look up the company for {Symbol} after a trade; it's retried later", symbol);
         }
     }
 
@@ -330,12 +383,22 @@ public partial class TradingService(FolioDb db, FinnhubClient finnhub, MarketClo
             await db.SaveChangesAsync(ct);
             return added ?? existing;
         }
-        catch (Exception ex) when (ex is FinnhubException or DbUpdateException)
+        catch (Exception ex)
         {
+            // Undo only our own row, without touching the database: callers (the order worker) may still have
+            // tracked orders to save, and a half-done company row mustn't be saved along with them.
+            if (added is not null)
+            {
+                db.Entry(added).State = EntityState.Detached;
+            }
+            else if (existing is not null)
+            {
+                var entry = db.Entry(existing);
+                entry.CurrentValues.SetValues(entry.OriginalValues);
+                entry.State = EntityState.Unchanged;
+            }
+            if (ex is not (FinnhubException or DbUpdateException)) throw;
             log.LogInformation("Skipped profile for {Symbol}: {Message}", symbol, ex.Message);
-            // Only undo our own row: callers (the order worker) may still have tracked orders to save.
-            if (added is not null) db.Entry(added).State = EntityState.Detached;
-            else if (existing is not null) await db.Entry(existing).ReloadAsync(ct);
             return existing;
         }
     }
