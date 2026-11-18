@@ -20,7 +20,6 @@
       <span id="updated" class="muted small" aria-live="polite"></span>
       <button id="refresh" class="btn ghost" type="button" title="Refresh quotes">Refresh</button>
       <button id="data" class="btn ghost" type="button">Backups</button>
-      <button id="reset" class="btn ghost" type="button">Reset portfolio</button>
     </div>
   </header>
 
@@ -272,13 +271,28 @@
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
   <dialog id="reset-dlg">
-    <form method="dialog" class="dlg">
-      <h2>Reset portfolio</h2>
-      <p class="muted">Deletes all positions, trades, orders and history in <span id="reset-name">this portfolio</span>. Your other portfolios aren't affected. This can't be undone.</p>
+    <form method="dialog" class="dlg" novalidate>
+      <h2>Reset <span id="reset-name">this portfolio</span>?</h2>
+      <p class="muted">Starts it over with new cash. All its positions, trades, orders and history are deleted. Your other portfolios, your watchlist and its trading costs stay as they are. This can't be undone.</p>
       <label class="field"><span>Starting cash</span><input id="reset-cash" type="number" min="1" step="any" value="100000"></label>
+      <label class="field"><span>Type <b id="reset-confirm-name"></b> to confirm</span><input id="reset-confirm" autocomplete="off" spellcheck="false"></label>
+      <p id="reset-msg" class="small msg down" role="alert"></p>
       <div class="dlg-actions">
         <button value="cancel" class="btn ghost" formnovalidate>Cancel</button>
-        <button value="ok" class="btn danger" data-default>Reset</button>
+        <button id="reset-ok" value="ok" class="btn danger" data-default disabled>Reset portfolio</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="delete-dlg">
+    <form method="dialog" class="dlg" novalidate>
+      <h2>Delete <span id="delete-name">this portfolio</span>?</h2>
+      <p class="muted">Deletes the portfolio with all its positions, trades, orders and history. Your other portfolios and your watchlist aren't affected. This can't be undone.</p>
+      <label class="field"><span>Type <b id="delete-confirm-name"></b> to confirm</span><input id="delete-confirm" autocomplete="off" spellcheck="false"></label>
+      <p id="delete-msg" class="small msg down" role="alert"></p>
+      <div class="dlg-actions">
+        <button value="cancel" class="btn ghost" formnovalidate>Cancel</button>
+        <button id="delete-ok" value="ok" class="btn danger" data-default disabled>Delete portfolio</button>
       </div>
     </form>
   </dialog>
@@ -315,13 +329,21 @@
       </div>
       <p class="small muted">Costs apply to trades from now on. Past trades keep what they paid.</p>
       <p id="pf-manage-msg" class="small msg down" role="alert"></p>
-      <div class="dlg-actions spread">
-        <button id="pf-delete" value="delete" class="btn danger" formnovalidate>Delete portfolio</button>
-        <span>
-          <button value="cancel" class="btn ghost" formnovalidate>Cancel</button>
-          <button value="rename" class="btn primary" data-default>Save</button>
-        </span>
+      <div class="dlg-actions">
+        <button value="cancel" class="btn ghost" formnovalidate>Cancel</button>
+        <button value="rename" class="btn primary" data-default>Save</button>
       </div>
+      <section class="danger-zone" aria-labelledby="danger-h">
+        <h3 id="danger-h">Danger zone</h3>
+        <div class="danger-row">
+          <div><b>Reset</b><span class="small muted">Start over with new cash. Deletes this portfolio's positions, trades, orders and history.</span></div>
+          <button id="pf-reset" type="button" class="btn danger xs">Reset…</button>
+        </div>
+        <div class="danger-row">
+          <div><b>Delete</b><span id="pf-delete-note" class="small muted">Remove this portfolio and everything in it.</span></div>
+          <button id="pf-delete" type="button" class="btn danger xs">Delete…</button>
+        </div>
+      </section>
     </form>
   </dialog>
 
@@ -355,6 +377,24 @@
       <div class="dlg-actions">
         <button value="cancel" class="btn ghost" formnovalidate>Cancel</button>
         <button value="ok" class="btn primary" data-default>Apply split</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="setup-dlg" aria-labelledby="setup-h">
+    <form method="dialog" class="dlg" novalidate>
+      <h2 id="setup-h">Connect to Finnhub</h2>
+      <p class="muted">Folio gets live stock prices from Finnhub. Their free plan is all you need.</p>
+      <ol class="setup-steps">
+        <li><a href="https://finnhub.io/register" target="_blank" rel="noopener noreferrer">Get a free Finnhub key</a>. It takes about a minute; after you sign up, the key is on your Finnhub dashboard.</li>
+        <li>Paste it below and press <b>Save key</b>.</li>
+      </ol>
+      <label class="field"><span>Finnhub API key</span><input id="setup-key" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="Paste your key here"></label>
+      <p class="small muted">Folio checks the key with Finnhub, then stores it encrypted on this computer. It never comes back to your browser.</p>
+      <p id="setup-msg" class="small msg down" role="alert"></p>
+      <div class="dlg-actions">
+        <button value="cancel" class="btn ghost" formnovalidate>Not now</button>
+        <button id="setup-save" value="ok" class="btn primary" data-default>Save key</button>
       </div>
     </form>
   </dialog>

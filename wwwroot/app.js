@@ -132,7 +132,6 @@ function renderPortfolios() {
       </button>`;
   }).join("");
   const cur = currentPortfolio();
-  $("#reset-name").textContent = cur ? `“${cur.name}”` : "this portfolio";
   document.title = cur && state.portfolios.length > 1 ? `${cur.name} · Folio` : "Folio";
 }
 
@@ -209,7 +208,7 @@ newDlg.querySelector("form").addEventListener("submit", async (ev) => {
   }
 });
 
-// Settings: name, trading costs, delete
+// Settings: name and trading costs, plus Reset and Delete in the danger zone
 const manageDlg = $("#pf-manage-dlg");
 $("#pf-manage").addEventListener("click", () => {
   const cur = currentPortfolio();
@@ -220,39 +219,46 @@ $("#pf-manage").addEventListener("click", () => {
   $("#pf-manage-msg").textContent = "";
   const only = state.portfolios.length <= 1;
   $("#pf-delete").disabled = only;
-  $("#pf-delete").title = only ? "You can't delete your only portfolio. Use Reset portfolio instead." : "";
+  $("#pf-delete-note").textContent = only
+    ? "Your only portfolio can't be deleted. Reset it to start over."
+    : "Remove this portfolio and everything in it.";
   manageDlg.showModal();
   $("#pf-rename").select();
 });
 manageDlg.querySelector("form").addEventListener("submit", async (ev) => {
-  const action = ev.submitter?.value;
-  if (action !== "rename" && action !== "delete") return;
+  if (ev.submitter?.value !== "rename") return;
   ev.preventDefault();
   const cur = currentPortfolio();
   try {
-    if (action === "rename") {
-      await api(`/api/portfolios/${cur.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ name: $("#pf-rename").value, commission: feeOf($("#pf-fee").value), slippageBps: toBps($("#pf-slip").value) }),
-      });
-      manageDlg.close();
-      await loadPortfolios();
-      updateTicket(); // the order estimate uses the new costs
-    } else {
-      if (!confirm(`Delete “${cur.name}” with all its positions, trades, orders and history? This can't be undone.`)) return;
-      await api(`/api/portfolios/${cur.id}`, { method: "DELETE" });
-      manageDlg.close();
-      state.portfolioId = null;
-      await loadPortfolios(); // falls back to the first portfolio
-      state.tradePage = 1;
-      state.knownOpenOrders = null;
-      await load();
-      toast(`Deleted “${cur.name}”.`);
-    }
+    await api(`/api/portfolios/${cur.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name: $("#pf-rename").value, commission: feeOf($("#pf-fee").value), slippageBps: toBps($("#pf-slip").value) }),
+    });
+    manageDlg.close();
+    await loadPortfolios();
+    updateTicket(); // the order estimate uses the new costs
   } catch (e) {
     $("#pf-manage-msg").textContent = e.message;
   }
 });
+
+/**
+ * Opens a dialog whose destructive button stays disabled until the portfolio's name is typed. Wiping a
+ * portfolio should take a deliberate act, not one misplaced click.
+ */
+function openGuarded(dlg, prefix, cur) {
+  $(`#${prefix}-name`).textContent = `“${cur.name}”`;
+  $(`#${prefix}-confirm-name`).textContent = cur.name;
+  $(`#${prefix}-msg`).textContent = "";
+  const input = $(`#${prefix}-confirm`);
+  const ok = $(`#${prefix}-ok`);
+  input.value = "";
+  ok.disabled = true;
+  input.oninput = () => { ok.disabled = input.value.trim() !== cur.name; };
+  manageDlg.close();
+  dlg.showModal();
+  input.focus();
+}
 
 // ---------- Loading ----------
 let loadSeq = 0;
@@ -297,7 +303,7 @@ async function load() {
     $("#updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
 
     if (!state.configured) {
-      banner("No Finnhub API key configured, so quotes and trading are off. Run <code>dotnet user-secrets set Finnhub:ApiKey &lt;your-key&gt;</code> and restart. Free keys: finnhub.io.");
+      banner(`No Finnhub key yet, so prices and trading are off. <button type="button" class="btn xs" data-setup>Add your Finnhub key</button>`);
     } else if (portfolio.anyStale) {
       banner("Some prices couldn't be refreshed (Finnhub rate limit or outage). They show the last known price, marked <b>stale</b>.");
     } else {
@@ -1684,23 +1690,56 @@ form.addEventListener("submit", async (ev) => {
   }
 });
 
-// ---------- Reset ----------
-const dlg = $("#reset-dlg");
-$("#reset").addEventListener("click", () => {
-  $("#reset-cash").value = state.portfolio?.startingCash ?? 100000;
-  dlg.showModal();
+// ---------- Reset and delete (from Settings) ----------
+const resetDlg = $("#reset-dlg");
+$("#pf-reset").addEventListener("click", () => {
+  const cur = currentPortfolio();
+  if (!cur) return;
+  $("#reset-cash").value = state.portfolio?.startingCash ?? cur.startingCash ?? 100000;
+  openGuarded(resetDlg, "reset", cur);
 });
-dlg.addEventListener("close", async () => {
-  if (dlg.returnValue !== "ok") return;
+resetDlg.querySelector("form").addEventListener("submit", async (ev) => {
+  if (ev.submitter?.value !== "ok") return;
+  ev.preventDefault();
+  const cur = currentPortfolio();
+  if ($("#reset-ok").disabled || !cur) return;
   try {
-    await api("/api/portfolio/reset", { method: "POST", body: JSON.stringify({ startingCash: parseFloat($("#reset-cash").value) }) });
+    const startingCash = parseFloat($("#reset-cash").value);
+    await api("/api/portfolio/reset", { method: "POST", body: JSON.stringify({ startingCash }) });
+    resetDlg.close();
     state.quote = null;
     $("#quote").hidden = true;
     $("#trade-msg").textContent = "";
     state.tradePage = 1;
+    state.knownOpenOrders = null;
     await load();
+    toast(`Reset “${cur.name}” with ${usd.format(startingCash)}.`);
   } catch (e) {
-    banner(esc(e.message));
+    $("#reset-msg").textContent = e.message;
+  }
+});
+
+const deleteDlg = $("#delete-dlg");
+$("#pf-delete").addEventListener("click", () => {
+  const cur = currentPortfolio();
+  if (cur && state.portfolios.length > 1) openGuarded(deleteDlg, "delete", cur);
+});
+deleteDlg.querySelector("form").addEventListener("submit", async (ev) => {
+  if (ev.submitter?.value !== "ok") return;
+  ev.preventDefault();
+  const cur = currentPortfolio();
+  if ($("#delete-ok").disabled || !cur) return;
+  try {
+    await api(`/api/portfolios/${cur.id}`, { method: "DELETE" });
+    deleteDlg.close();
+    state.portfolioId = null;
+    await loadPortfolios(); // falls back to the first portfolio
+    state.tradePage = 1;
+    state.knownOpenOrders = null;
+    await load();
+    toast(`Deleted “${cur.name}”.`);
+  } catch (e) {
+    $("#delete-msg").textContent = e.message;
   }
 });
 
@@ -1811,6 +1850,50 @@ $("#import-file").addEventListener("change", async (ev) => {
   }
 });
 
+// ---------- First-run setup: the Finnhub key ----------
+// Shown when Folio has no key yet, so nobody needs a terminal to get started. The key goes straight to the server,
+// which checks it with Finnhub and stores it encrypted; the page never keeps it.
+const setupDlg = $("#setup-dlg");
+function openSetup() {
+  $("#setup-key").value = "";
+  $("#setup-msg").textContent = "";
+  if (!setupDlg.open) setupDlg.showModal();
+  $("#setup-key").focus();
+}
+$("#banner").addEventListener("click", (ev) => {
+  if (ev.target.closest("[data-setup]")) openSetup();
+});
+setupDlg.querySelector("form").addEventListener("submit", async (ev) => {
+  if (ev.submitter?.value !== "ok") return;
+  ev.preventDefault();
+  const msg = $("#setup-msg");
+  const input = $("#setup-key");
+  const key = input.value.trim();
+  if (!key) { msg.textContent = "Paste your Finnhub key first."; input.focus(); return; }
+
+  const save = $("#setup-save");
+  save.disabled = true;
+  save.textContent = "Checking…";
+  msg.textContent = "";
+  try {
+    await api("/api/setup/finnhub-key", { method: "POST", body: JSON.stringify({ apiKey: key }) });
+    input.value = "";
+    setupDlg.close();
+    const status = await api("/api/status");
+    state.configured = status.finnhubConfigured;
+    state.streaming = status.streaming;
+    updateTicket();
+    await load();
+    connectStream();
+    toast("Connected to Finnhub. Prices are live, so you can start trading.");
+  } catch (e) {
+    msg.textContent = e.message;
+  } finally {
+    save.disabled = false;
+    save.textContent = "Save key";
+  }
+});
+
 // ---------- Boot ----------
 $("#refresh").addEventListener("click", load);
 
@@ -1823,6 +1906,7 @@ $("#refresh").addEventListener("click", load);
   updateTicket();
   try { await loadPortfolios(); } catch (e) { banner(esc(e.message)); }
   await load();
+  if (!state.configured) openSetup(); // first run: nothing works without a key
   connectStream();
   setInterval(() => { if (!document.hidden) load(); }, REFRESH_MS);
   document.addEventListener("visibilitychange", () => {

@@ -214,8 +214,9 @@ public class FinnhubStreamLiveTests
         var live = new LivePrices(TimeProvider.System);
         var got = new TaskCompletionSource<LiveTick>();
         live.Ticked += t => got.TrySetResult(t);
-        var stream = new FinnhubStream(live, new Fixed("BINANCE:BTCUSDT"),
-            Options.Create(new FinnhubOptions { ApiKey = key }), NullLogger<FinnhubStream>.Instance);
+        var options = Options.Create(new FinnhubOptions { ApiKey = key });
+        var keys = new FinnhubKeySetup(options, new FinnhubKeyStorage(null, false), NullLogger<FinnhubKeySetup>.Instance);
+        var stream = new FinnhubStream(live, new Fixed("BINANCE:BTCUSDT"), options, keys, NullLogger<FinnhubStream>.Instance);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await stream.StartAsync(cts.Token);

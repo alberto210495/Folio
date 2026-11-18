@@ -19,6 +19,9 @@ export class FakeApi {
     this.orders = [];
     this.market = { isOpen: true, closedReason: null, closesAt: "2026-11-18T21:00:00Z", nextOpen: "2026-11-19T14:30:00Z", earlyClose: false, enforced: true };
     this.watchlist = [];
+    this.otherPortfolios = []; // summaries of portfolios besides "My portfolio" (id 1), see addPortfolio()
+    this.configured = true;      // whether Folio has a Finnhub key; false shows the setup screen
+    this.acceptedKey = "goodFinnhubKey123"; // the only key the fake's "Finnhub" accepts on the setup screen
     this.locked = false;
     this.nextId = 1;
   }
@@ -30,6 +33,14 @@ export class FakeApi {
    */
   once(method, path, reply) {
     this.overrides.push({ method, path, reply });
+  }
+
+  /** Adds another portfolio to the tabs (it holds only cash). */
+  addPortfolio(name, cash = 50_000) {
+    this.otherPortfolios.push({
+      id: this.otherPortfolios.length + 2, name, startingCash: cash, cash, totalValue: cash, totalReturn: 0,
+      totalReturnPercent: 0, holdings: 0, createdAt: "2026-11-10T15:00:00Z", commission: 0, slippageBps: 0,
+    });
   }
 
   /** Requests to one route, e.g. posts("/api/trades"). */
@@ -74,9 +85,34 @@ export class FakeApi {
     // Without the access cookie, the real server answers every API request with 401.
     if (this.locked) return error(401, "Folio is locked. Open it from the Folio shortcut or the tray icon.");
 
-    if (route === "GET /api/status") return ok({ finnhubConfigured: true, streaming: false, streamConnected: false });
+    if (route === "GET /api/status") return ok({ finnhubConfigured: this.configured, streaming: false, streamConnected: false });
+    if (route === "POST /api/setup/finnhub-key") {
+      // The server's checks, in its order: the key's shape, then whether Finnhub accepts it.
+      const key = (body?.apiKey ?? "").trim();
+      if (!/^[A-Za-z0-9_-]{8,128}$/.test(key))
+        return error(400, "That doesn't look like a Finnhub key. Copy it from your Finnhub dashboard: letters and digits, no spaces.");
+      if (key !== this.acceptedKey)
+        return error(400, "Finnhub didn't accept that key. Check you copied all of it from your Finnhub dashboard.");
+      this.configured = true;
+      return { status: 204 };
+    }
     if (route === "GET /api/market") return ok(this.market);
-    if (route === "GET /api/portfolios") return ok([this.summary()]);
+    if (route === "GET /api/portfolios") return ok([this.summary(), ...this.otherPortfolios]);
+    if (route === "POST /api/portfolio/reset") {
+      if (!(body?.startingCash > 0)) return error(400, "Starting cash must be between $1 and $1,000,000,000.");
+      this.startingCash = this.cash = body.startingCash;
+      this.positions.clear();
+      this.trades = [];
+      this.orders = [];
+      return { status: 204 };
+    }
+    if ((m = route.match(/^DELETE \/api\/portfolios\/(\d+)$/))) {
+      const id = Number(m[1]);
+      if (id === 1 && this.otherPortfolios.length === 0) return error(400, "You can't delete your only portfolio.");
+      this.otherPortfolios = this.otherPortfolios.filter((p) => p.id !== id);
+      if (id === 1) this.deletedFirst = true;
+      return { status: 204 };
+    }
     if (route === "GET /api/portfolio") return ok(this.portfolio());
     if (route === "GET /api/trades") return ok(this.tradePage(Number(query.get("page") || 1), Number(query.get("pageSize") || 25)));
     if (route === "GET /api/history") return ok({ startingCash: this.startingCash, benchmarkSymbol: "SPY", benchmarkNow: this.prices.SPY, points: [], benchmarkBasePrice: null });

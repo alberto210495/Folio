@@ -22,6 +22,10 @@ public sealed class FakeFinnhub : HttpMessageHandler
     public int ProfileCalls { get; private set; }
     public HttpStatusCode FailureStatus { get; set; } = HttpStatusCode.TooManyRequests;
 
+    /// <summary>When set, requests with any other key get 401, as Finnhub answers a wrong key.</summary>
+    public string? AcceptedKey { get; set; }
+    public int Requests { get; private set; }
+
     public enum Fault { Timeout, BadJson }
     /// <summary>Symbols whose /quote times out (like HttpClient's timeout) or answers with something that isn't JSON.</summary>
     public Dictionary<string, Fault> QuoteFaults { get; } = new(StringComparer.OrdinalIgnoreCase);
@@ -38,6 +42,10 @@ public sealed class FakeFinnhub : HttpMessageHandler
     {
         var path = request.RequestUri!.AbsolutePath;
         var symbol = HttpUtility.ParseQueryString(request.RequestUri.Query)["symbol"] ?? "";
+        Requests++;
+
+        if (AcceptedKey is not null && request.Headers.TryGetValues("X-Finnhub-Token", out var keys) && keys.Single() != AcceptedKey)
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized));
 
         if (Failing.Contains(symbol))
             return Task.FromResult(new HttpResponseMessage(FailureStatus));
