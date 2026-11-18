@@ -1,0 +1,71 @@
+# Builds a ready-to-run Folio for Windows when a version tag (v1.2.3) is pushed, and attaches it to a GitHub Release.
+# The zip includes .NET itself (self-contained), so nobody needs the .NET SDK, PowerShell or a certificate:
+# unzip, double-click FolioTray.exe, and it installs. Actions are pinned to full commit SHAs, as in ci.yml.
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+# Only creating the release needs write access, and only to this repository's contents.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Test
+        run: dotnet test Folio.slnx --configuration Release
+
+      - name: Build Folio and the tray (self-contained, win-x64)
+        shell: pwsh
+        run: |
+          $version = '${{ github.ref_name }}'.TrimStart('v')
+          $out = 'out\Folio'
+          dotnet publish Folio.csproj -c Release -r win-x64 --self-contained -p:OutputType=WinExe -p:Version=$version -o $out
+          if ($LASTEXITCODE) { exit 1 }
+          dotnet publish FolioTray\FolioTray.csproj -c Release -r win-x64 --self-contained -p:Version=$version -o $out
+          if ($LASTEXITCODE) { exit 1 }
+          # A folder from development must never ship: no database, keys or secrets in the zip.
+          $unwanted = Get-ChildItem $out -Recurse -Include *.db, *.db-wal, *.db-shm, access.key, secrets.json, appsettings.Development.json
+          if ($unwanted) { $unwanted | ForEach-Object FullName; throw 'Unexpected files in the build.' }
+          @"
+          Folio $version for Windows
+
+          To install: double-click FolioTray.exe in this folder and answer Yes.
+          If Windows says "Windows protected your PC", choose More info, then Run anyway (Folio isn't code-signed).
+
+          Folio installs for your Windows account only (no administrator rights) into %LOCALAPPDATA%\Programs\Folio,
+          adds a desktop and Start menu shortcut, and opens in your browser. The first time, it asks for a free
+          Finnhub key (https://finnhub.io/register). Your data stays in %LOCALAPPDATA%\Folio.
+
+          To update: download the new version and do the same; your data is kept.
+          To uninstall: right-click the Folio icon by the clock and choose Uninstall Folio.
+          "@ | Set-Content "$out\READ ME FIRST.txt" -Encoding utf8
+          Compress-Archive -Path "$out\*" -DestinationPath "Folio-$version-win-x64.zip"
+          (Get-FileHash "Folio-$version-win-x64.zip" -Algorithm SHA256).Hash.ToLower() + "  Folio-$version-win-x64.zip" |
+            Set-Content "Folio-$version-win-x64.zip.sha256" -Encoding ascii
+
+      - name: Create the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = '${{ github.ref_name }}'.TrimStart('v')
+          gh release create '${{ github.ref_name }}' "Folio-$version-win-x64.zip" "Folio-$version-win-x64.zip.sha256" `
+            --title "Folio $version" `
+            --notes "Download **Folio-$version-win-x64.zip**, unzip it, and double-click **FolioTray.exe**. No .NET SDK or PowerShell needed. Windows may say it protected your PC, because Folio isn't code-signed: choose **More info → Run anyway**. Your data is kept when updating."

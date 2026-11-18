@@ -39,6 +39,8 @@ internal sealed class TrayContext : ApplicationContext
         menu.Items.Add("Open data folder", null, (_, _) => OpenFolder(_settings.DataDirectory));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Quit Folio", null, async (_, _) => await QuitAsync());
+        if (Installer.IsInstalledCopy(_settings.AppDirectory))
+            menu.Items.Add("Uninstall Folio…", null, async (_, _) => await UninstallAsync());
 
         _icon = new NotifyIcon { Icon = DrawIcon(), Text = "Folio", ContextMenuStrip = menu, Visible = true };
         _icon.DoubleClick += (_, _) => OpenBrowser(_settings.OpenUrl());
@@ -126,6 +128,18 @@ internal sealed class TrayContext : ApplicationContext
             _stopping = false;
             UpdateStatus();
         }
+    }
+
+    /// <summary>Stops Folio, removes the program and its shortcuts (your data stays), and exits.</summary>
+    private async Task UninstallAsync()
+    {
+        if (_stopping || !Installer.ConfirmUninstall()) return;
+        _stopping = true;
+        _watch.Stop();
+        await StopAsync();
+        Installer.Uninstall(quiet: true, fromTray: true);
+        _icon.Visible = false;
+        ExitThread();
     }
 
     private async Task QuitAsync()

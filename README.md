@@ -6,38 +6,57 @@ Paper-trading portfolio tracker. Buy and sell real tickers with fake money at li
 
 **Stack:** ASP.NET Core 10 minimal API · EF Core 10 + SQLite · vanilla HTML/CSS/JS (no build step) · Finnhub.
 
-## Run
+## Install (Windows)
 
-1. Trust the local HTTPS certificate once (Windows asks you to confirm):
-
-   ```sh
-   dotnet dev-certs https --trust
-   ```
-2. Install it (Windows):
-
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File scripts\install.ps1
-   ```
-
-   This publishes Folio to `%LOCALAPPDATA%\Programs\Folio` as a background app with no console window. It adds a **Folio** desktop shortcut, which starts Folio if needed and opens <https://localhost:7245>, and it starts Folio when you sign in (skip with `-NoStartup`). Data lives in `%LOCALAPPDATA%\Folio`, separate from the program. On first install, this folder's `folio.db` is copied there.
-
-   - **Tray icon:** a small black-and-ice icon by the clock.
-     - **Open Folio** (or double-click), **Restart Folio**, **Open logs folder**, **Open data folder** and **Quit Folio**.
-     - Quit shuts Folio down cleanly.
-     - If Folio crashes, the tray restarts it, up to 3 times in 5 minutes; after that it stops and tells you to check the logs.
-     - The tray is a separate small Windows program (`FolioTray`), so Folio itself stays cross-platform.
-   - **Update** after pulling new code: run the same command again. It quits Folio cleanly, updates it and starts it again, keeping your data.
-   - **Logs:** the installed copy writes one file per day to `%LOCALAPPDATA%\Folio\logs` and keeps 14 days (`Folio:LogDirectory`). The log has startup and shutdown, warnings, errors, and Folio's own events (stream, backups, held prices). Request-by-request noise is left out, and your API key never appears in it.
-   - **Uninstall:** `powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1` keeps your data. Add `-RemoveData` to delete it too.
-
-   Only one Folio runs per database. Opening the shortcut again just opens the browser.
-3. Open Folio from the desktop shortcut. The first time, it asks for your **Finnhub key**:
+1. Download **Folio-x.y.z-win-x64.zip** from the [Releases page](https://github.com/alberto210495/Folio/releases) and unzip it.
+2. Double-click **FolioTray.exe** in the unzipped folder and answer **Yes**.
+   - Windows may say **"Windows protected your PC"** because Folio isn't code-signed. Choose **More info → Run anyway**.
+   - Nothing else is needed: the download includes .NET, there's no terminal or PowerShell, no administrator rights, and no certificate to trust.
+3. Folio opens in your browser. The first time, it asks for your **Finnhub key**:
    - Get a free key at <https://finnhub.io/register>; it's on your Finnhub dashboard after you sign up.
    - Paste it in and press **Save key**. Folio checks it with Finnhub and stores it encrypted (Windows data protection, readable only by your account on this PC). Prices and trading start straight away, with no restart.
    - A key Finnhub doesn't accept is refused rather than saved. If you skip this, the banner at the top has an **Add your Finnhub key** button.
    - You can still set the key yourself instead: `dotnet user-secrets set Finnhub:ApiKey <your-key>` (encrypted at the next start), or the environment variable `Finnhub__ApiKey`, which takes priority over a saved key.
 
-**For development**, `dotnet run` uses <https://localhost:7246> and this folder's own `folio.db`, so it never clashes with the installed copy.
+What the installer does, for your Windows account only:
+
+- **Program:** `%LOCALAPPDATA%\Programs\Folio`, running in the background with no console window.
+- **Data:** `%LOCALAPPDATA%\Folio`, separate from the program. Installing, updating and uninstalling never touch it.
+- **Shortcuts:** **Folio** on the desktop and in the Start menu. Each starts Folio if needed and opens <http://localhost:7245>.
+- **Startup:** Folio starts when you sign in.
+- **Backups:** copied to `%OneDrive%\Folio backups` too, when OneDrive is set up.
+
+Using it:
+
+- **Tray icon:** a small black-and-ice icon by the clock.
+  - **Open Folio** (or double-click), **Restart Folio**, **Open logs folder**, **Open data folder**, **Quit Folio** and **Uninstall Folio…**.
+  - Quit shuts Folio down cleanly.
+  - If Folio crashes, the tray restarts it, up to 3 times in 5 minutes; after that it stops and tells you to check the logs.
+  - The tray is a separate small Windows program (`FolioTray`), and it's also the installer, so Folio itself stays cross-platform.
+- **Update:** download the new version and double-click its FolioTray.exe again. It quits Folio cleanly, replaces the program and starts it again, keeping your data and settings.
+- **Logs:** one file per day in `%LOCALAPPDATA%\Folio\logs`, kept 14 days (`Folio:LogDirectory`). The log has startup and shutdown, warnings, errors, and Folio's own events (stream, backups, held prices). Request-by-request noise is left out, and your API key never appears in it.
+- **Uninstall:** **Uninstall Folio…** on the tray icon's menu removes the program and shortcuts and keeps your data. Delete `%LOCALAPPDATA%\Folio` yourself to remove the data too.
+
+Only one Folio runs per database. Opening the shortcut again just opens the browser.
+
+### From source (developers)
+
+Needs the .NET 10 SDK.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+```
+
+This builds Folio from this folder and hands the build to the same installer the download uses.
+
+- **Options:** `-NoStartup` skips starting at sign-in. `-CopyBackupsTo <folder>` sets where backup copies go; `""` turns copies off.
+- **First install:** this folder's `folio.db` is copied to `%LOCALAPPDATA%\Folio`.
+- **Update:** run the script again after pulling new code.
+- **Uninstall:** `scripts\uninstall.ps1` does the same as the tray menu. Add `-RemoveData` to delete your data too.
+
+**Releases:** pushing a tag like `v1.2.3` runs `.github/workflows/release.yml`. It tests, builds the self-contained zip on Windows, checks that no database, key or development settings are in it, and attaches it to a GitHub Release with its SHA-256.
+
+**For development**, `dotnet run` uses <https://localhost:7246> (HTTPS with the .NET development certificate; trust it once with `dotnet dev-certs https --trust`) and this folder's own `folio.db`, so it never clashes with the installed copy. The address is `Folio:Url`.
 
 A new database starts with one portfolio, "My portfolio", holding $100,000. To start it over with any amount, use **Settings → Reset**. Use **+ New** to add another portfolio.
 
@@ -136,8 +155,14 @@ Errors return `{ "error": "..." }`: 400 for rejected orders, 404 for an unknown 
 
 Folio is built to run on your own computer for one person. It has no login, so these protections keep everything else out:
 
-- **Only this computer can connect.** Kestrel listens on `localhost` (127.0.0.1 and ::1) only, set in `appsettings.json` under `Kestrel:Endpoints`. Other devices on your network can't reach it.
-- **HTTPS (against eavesdropping and tampering).** The page and API are served over HTTPS, and plain HTTP redirects to it. Calls to Finnhub use HTTPS and WSS, with normal certificate checks. Your API key stays on the server and never reaches the browser. The setup screen sends the key only to Folio, and Folio never sends it back. HSTS is not sent: browsers ignore it for `localhost`, and pinning `localhost` to HTTPS would break your other local projects.
+- **Only this computer can connect.** Kestrel listens on `localhost` (127.0.0.1 and ::1) only, at the address in `Folio:Url`. Folio refuses to start with any other host. Other devices on your network can't reach it.
+- **HTTP for the installed copy, HTTPS for development.** The installed copy serves plain <http://localhost:7245>, so nobody has to trust a certificate by hand:
+  - **Why that's safe here:** the traffic never leaves your PC (the loopback interface), and browsers treat `localhost` as a secure context, so the page works the same.
+  - **What HTTPS would add:** protection against someone reading loopback traffic, which takes administrator rights on your PC. Someone with those could read Folio's files directly anyway.
+  - **Development:** runs over HTTPS with the .NET development certificate, and plain HTTP redirects to it. Setting `Folio:Url` to an `https://` address does the same for any copy.
+  - **What changes over HTTP:** the Content Security Policy leaves out `upgrade-insecure-requests`, which would send every request to a port with no HTTPS. The access cookie can't use the `__Host-` prefix (see below).
+  - **Finnhub and your key:** calls to Finnhub always use HTTPS and WSS, with normal certificate checks. Your API key stays on the server and never reaches the browser. The setup screen sends the key only to Folio, and Folio never sends it back.
+  - **No HSTS:** browsers ignore it for `localhost`, and pinning `localhost` to HTTPS would break your other local projects.
 - **Other websites can't use Folio through your browser.** API requests labelled by the browser as coming from another site (`Sec-Fetch-Site` other than `same-origin`), or writes with a foreign `Origin`, get 403. This stops cross-site request forgery and pages reading your portfolio. Command-line tools like curl still work.
 - **DNS rebinding is blocked.** A malicious domain that re-points itself at 127.0.0.1 still sends its own host name, and `AllowedHosts` only accepts `localhost`, `127.0.0.1` and `[::1]`.
 - **Script injection (XSS).** A strict Content Security Policy allows scripts only from Folio itself: no inline scripts and no `eval`. Images come only from Folio, and Folio can't be framed. Everything from the server is inserted as text (`esc()`, `textContent`), and the API only returns JSON.
@@ -146,7 +171,8 @@ Folio is built to run on your own computer for one person. It has no login, so t
 
 - **Local access key (installed copy).** Other Windows accounts and programs on this PC can reach `localhost`, so the installed copy also requires a key.
   - **The key:** random (256 bits), kept in `%LOCALAPPDATA%\Folio\access.key`, which only your account can read.
-  - **Unlocking:** the desktop shortcut and tray open `/unlock?key=…` once. That sets a `__Host-` cookie (Secure, HttpOnly, SameSite=Strict, valid 400 days) and redirects to the plain address, so bookmarks work after that.
+  - **Unlocking:** the desktop shortcut and tray open `/unlock?key=…` once. That sets a cookie (HttpOnly, SameSite=Strict, Path=/, no Domain, valid 400 days) and redirects to the plain address, so bookmarks work after that.
+  - **The cookie's name:** over HTTPS it's `__Host-folio-access` and also Secure. Over the installed copy's plain HTTP it's `folio-access` without Secure, since browsers don't reliably keep a Secure cookie from an http page. Like any cookie, it's also sent to other servers on `localhost` (cookies aren't separated by port), whatever its prefix. Only local programs run those, and the key file's limit below applies to them anyway.
   - **Without it:** everything, including the page itself, returns a "locked" page or 401.
   - **Scripts** can send the key in an `X-Folio-Key` header.
   - **Defaults:** `Folio:RequireAccessKey` is on for the installed copy and off for development runs. To change the key, delete the file: Folio makes a new one at the next start, and you reopen it from the shortcut.
@@ -169,7 +195,7 @@ If you ever want Folio reachable from other devices, it needs a proper login fir
 dotnet test Folio.slnx
 ```
 
-xUnit tests in `tests/Folio.Tests` cover privacy and access (backup encryption and tampering, encrypted copies that never fall back to plain ones, the encrypted API key, the access key and its cookie over HTTP, logo source and image checks), the log file (format, daily files, pruning, concurrent writes), bad-price protection (held jumps, confirmation, the REST yardstick, no fills from a bad tick), backups (copies, pruning, off-PC copies, export/import round trip, validation, the undo backup), security (headers, HTTPS redirect, foreign host names, cross-site requests and origins, injection attempts, error output; run against the real app pipeline), multiple portfolios (separation of cash, holdings, orders and history; fills into the right portfolio; reset; validation; deletion), trading (average cost, realized P&L, rounding, rejections, invalid sides), order safety (Finnhub timeouts and unreadable replies, a failed company lookup never failing a saved trade, one slow symbol not stopping other orders, order IDs placing an order once even when sent at the same time), the first-run Finnhub key (checked with Finnhub before saving, saved encrypted and read back at startup, other secrets kept, damaged files left alone, malformed, wrong and unverifiable keys refused, the environment variable respected, used at once without a restart, and other websites unable to set it), stock splits (forward and reverse, every portfolio, open orders, fractions, validation), timestamps from the app clock, company profile refresh, performance stats (win rate, averages, profit factor, drawdown and recovery), trading costs (fill prices, limit caps, cost basis, cash checks, settings), price alerts (direction, refusals, firing once, market hours, history, watchlist removal, splits, the stream event), live prices (merging ticks into quotes, message parsing, subscriptions, the event stream, tick-triggered fills), market hours (NYSE holidays, early closes, daylight saving, closed-market trading), limit and stop orders (trigger rules, fills, commitments, cancels, stale prices), company profiles and logos, the watchlist, trade history paging, CSV export (quoting, formula escaping, locale), reset, valuation, snapshots and the benchmark maths. They use a fake Finnhub and an in-memory SQLite database with the real migrations, so they need neither an API key nor a network connection. One optional test connects to the real Finnhub websocket when a `FINNHUB_KEY` environment variable is set; it streams a crypto pair, so it works even when US markets are closed.
+xUnit tests in `tests/Folio.Tests` cover privacy and access (backup encryption and tampering, encrypted copies that never fall back to plain ones, the encrypted API key, the access key and its cookie over HTTP, the installed copy on plain http://localhost (no redirect, no upgrade-insecure-requests, an access cookie browsers accept over HTTP, writes only from Folio itself) and Folio refusing to listen anywhere but localhost, logo source and image checks), the log file (format, daily files, pruning, concurrent writes), bad-price protection (held jumps, confirmation, the REST yardstick, no fills from a bad tick), backups (copies, pruning, off-PC copies, export/import round trip, validation, the undo backup), security (headers, HTTPS redirect, foreign host names, cross-site requests and origins, injection attempts, error output; run against the real app pipeline), multiple portfolios (separation of cash, holdings, orders and history; fills into the right portfolio; reset; validation; deletion), trading (average cost, realized P&L, rounding, rejections, invalid sides), order safety (Finnhub timeouts and unreadable replies, a failed company lookup never failing a saved trade, one slow symbol not stopping other orders, order IDs placing an order once even when sent at the same time), the first-run Finnhub key (checked with Finnhub before saving, saved encrypted and read back at startup, other secrets kept, damaged files left alone, malformed, wrong and unverifiable keys refused, the environment variable respected, used at once without a restart, and other websites unable to set it), stock splits (forward and reverse, every portfolio, open orders, fractions, validation), timestamps from the app clock, company profile refresh, performance stats (win rate, averages, profit factor, drawdown and recovery), trading costs (fill prices, limit caps, cost basis, cash checks, settings), price alerts (direction, refusals, firing once, market hours, history, watchlist removal, splits, the stream event), live prices (merging ticks into quotes, message parsing, subscriptions, the event stream, tick-triggered fills), market hours (NYSE holidays, early closes, daylight saving, closed-market trading), limit and stop orders (trigger rules, fills, commitments, cancels, stale prices), company profiles and logos, the watchlist, trade history paging, CSV export (quoting, formula escaping, locale), reset, valuation, snapshots and the benchmark maths. They use a fake Finnhub and an in-memory SQLite database with the real migrations, so they need neither an API key nor a network connection. One optional test connects to the real Finnhub websocket when a `FINNHUB_KEY` environment variable is set; it streams a crypto pair, so it works even when US markets are closed.
 
 ### Page tests
 
@@ -201,6 +227,7 @@ GitHub Actions run on every push and pull request to `main`:
 
 - **CI** (`.github/workflows/ci.yml`) builds Folio, runs every test, and fails if a package has a known vulnerability. It needs no secrets: the live Finnhub test skips itself. A second job runs the page tests on Node 24 and audits their npm packages.
 - **CodeQL** (`.github/workflows/codeql.yml`) scans the C# and JavaScript for security issues, and also runs weekly. Results are under the repository's **Security → Code scanning** tab.
+- **Release** (`.github/workflows/release.yml`) runs when a version tag like `v1.2.3` is pushed. It tests, builds the self-contained Windows zip, refuses to publish it if it contains a database, key or development settings, and attaches it with its SHA-256 to a GitHub Release. It is the only workflow with write access, limited to this repository's contents.
 - **Dependabot** (`.github/dependabot.yml`) opens weekly pull requests for package and action updates. It stays on .NET 10 (EF Core and ASP.NET Core 11 need .NET 11).
 
 Actions are pinned to exact commits and run with read-only permissions.

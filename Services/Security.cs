@@ -11,7 +11,7 @@ public static class Security
     /// served by Folio too, so nothing loads from elsewhere). Inline <c>style="…"</c> attributes are allowed (the charts set widths and
     /// colours that way), but inline scripts, eval, plugins, framing and foreign form targets are not.
     /// </summary>
-    public const string ContentSecurityPolicy =
+    public const string BasePolicy =
         "default-src 'none'; " +
         "script-src 'self'; " +
         "style-src 'self'; style-src-attr 'unsafe-inline'; " +
@@ -22,16 +22,22 @@ public static class Security
         "base-uri 'none'; " +
         "form-action 'self'; " +
         "frame-ancestors 'none'; " +
-        "object-src 'none'; " +
-        "upgrade-insecure-requests";
+        "object-src 'none'";
+
+    /// <summary>
+    /// The policy for a site served over HTTPS or plain HTTP. Over HTTPS it also asks the browser to upgrade any
+    /// http:// request; over http://localhost (the installed copy) that would send every request to a port with
+    /// no HTTPS and break the page, so it's left out.
+    /// </summary>
+    public static string ContentSecurityPolicy(bool https) => https ? BasePolicy + "; upgrade-insecure-requests" : BasePolicy;
 
     /// <summary>Security headers on every response, and no caching of API data.</summary>
-    public static IApplicationBuilder UseSecurityHeaders(this IApplicationBuilder app) => app.Use(async (ctx, next) =>
+    public static IApplicationBuilder UseSecurityHeaders(this IApplicationBuilder app, bool https = true) => app.Use(async (ctx, next) =>
     {
         ctx.Response.OnStarting(() =>
         {
             var h = ctx.Response.Headers;
-            h.ContentSecurityPolicy = ContentSecurityPolicy;
+            h.ContentSecurityPolicy = ContentSecurityPolicy(https);
             h.XContentTypeOptions = "nosniff";
             h.XFrameOptions = "DENY";
             h["Referrer-Policy"] = "no-referrer";
