@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
 using Folio.Services;
@@ -420,5 +421,142 @@ public sealed class LogoServiceTests : IDisposable
     {
         var logos = await Service("https://static2.finnhub.io/logo/AAPL.png");
         await Assert.ThrowsAsync<TradeRejectedException>(() => logos.GetAsync("..\\..\\Windows"));
+    }
+}
+
+/// <summary>Hosts the app as the installed copy runs: plain http://localhost, access key required.</summary>
+public sealed class PlainHttpFolioFactory : FolioFactory
+{
+    public string KeyFile { get; } = Path.Combine(Path.GetTempPath(), $"folio-key-{Guid.NewGuid():N}.key");
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        base.ConfigureWebHost(builder);
+        builder.UseSetting("Folio:Url", "http://localhost:7245");
+        builder.UseSetting("Folio:RequireAccessKey", "true");
+        builder.UseSetting("Folio:AccessKeyFile", KeyFile);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+        try { File.Delete(KeyFile); } catch (IOException) { }
+    }
+}
+
+/// <summary>
+/// The installed copy on plain http://localhost: no redirect to HTTPS, no "upgrade-insecure-requests" (it would break
+/// the page), and an access cookie browsers accept over HTTP, with every other protection kept.
+/// </summary>
+public class PlainHttpTests : IClassFixture<PlainHttpFolioFactory>
+{
+    private readonly PlainHttpFolioFactory _app;
+    public PlainHttpTests(PlainHttpFolioFactory app) => _app = app;
+
+    private HttpClient Http() => _app.CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new Uri("http://localhost:7245"), AllowAutoRedirect = false, HandleCookies = false });
+
+    private string Key()
+    {
+        _ = Http(); // starts the host, which creates the key
+        return File.ReadAllText(_app.KeyFile).Trim();
+    }
+
+    private HttpRequestMessage WithKey(HttpMethod method, string path)
+    {
+        var req = new HttpRequestMessage(method, path);
+        req.Headers.Add(AccessKey.HeaderName, Key());
+        return req;
+    }
+
+    [Fact]
+    public async Task Pages_are_served_over_http_without_a_redirect()
+    {
+        var res = await Http().SendAsync(WithKey(HttpMethod.Get, "/api/status"));
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+    }
+
+    [Fact]
+    public async Task The_policy_doesnt_upgrade_requests_to_https_but_keeps_everything_else()
+    {
+        var res = await Http().SendAsync(WithKey(HttpMethod.Get, "/"));
+        var csp = res.Headers.GetValues("Content-Security-Policy").Single();
+        Assert.DoesNotContain("upgrade-insecure-requests", csp);
+        Assert.Contains("default-src 'none'", csp);
+        Assert.Contains("script-src 'self';", csp);
+        Assert.Contains("frame-ancestors 'none'", csp);
+        Assert.Equal("DENY", res.Headers.GetValues("X-Frame-Options").Single());
+    }
+
+    [Fact]
+    public async Task Still_locked_without_the_key()
+    {
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Http().GetAsync("/api/portfolio")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Http().GetAsync("/")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Unlocking_sets_a_cookie_browsers_accept_over_http()
+    {
+        var res = await Http().GetAsync("/unlock?key=" + Uri.EscapeDataString(Key()));
+        Assert.Equal(HttpStatusCode.Redirect, res.StatusCode);
+
+        var cookie = res.Headers.GetValues("Set-Cookie").Single();
+        Assert.StartsWith(AccessKey.PlainCookieName + "=", cookie);
+        Assert.DoesNotContain("secure", cookie, StringComparison.OrdinalIgnoreCase); // a browser may drop a Secure cookie over http
+        Assert.Contains("httponly", cookie, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("samesite=strict", cookie, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("path=/", cookie, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("domain=", cookie, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(Key(), cookie);
+
+        var page = new HttpRequestMessage(HttpMethod.Get, "/api/portfolio");
+        page.Headers.Add("Cookie", cookie.Split(';')[0]);
+        Assert.Equal(HttpStatusCode.OK, (await Http().SendAsync(page)).StatusCode);
+    }
+
+    [Fact]
+    public async Task A_forged_cookie_is_refused()
+    {
+        var req = new HttpRequestMessage(HttpMethod.Get, "/api/portfolio");
+        req.Headers.Add("Cookie", $"{AccessKey.PlainCookieName}={new string('A', 64)}");
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Http().SendAsync(req)).StatusCode);
+    }
+
+    [Theory]
+    [InlineData("same-origin", "http://localhost:7245", HttpStatusCode.NoContent)]
+    [InlineData("cross-site", "https://evil.example", HttpStatusCode.Forbidden)]
+    [InlineData(null, "https://localhost:7245", HttpStatusCode.Forbidden)] // the https origin is a different site now
+    public async Task Writes_are_only_accepted_from_folio_itself(string? site, string origin, HttpStatusCode expected)
+    {
+        var req = WithKey(HttpMethod.Patch, "/api/portfolios/1");
+        req.Content = JsonContent.Create(new { name = "My portfolio" });
+        if (site is not null) req.Headers.Add("Sec-Fetch-Site", site);
+        req.Headers.Add("Origin", origin);
+        Assert.Equal(expected, (await Http().SendAsync(req)).StatusCode);
+    }
+}
+
+public class SiteUrlTests
+{
+    [Theory]
+    [InlineData("http://0.0.0.0:7245")]
+    [InlineData("https://example.com")]
+    [InlineData("ftp://localhost:7245")]
+    [InlineData("http://localhost:7245/folio")]
+    [InlineData("not a url")]
+    public void Folio_only_listens_on_localhost(string url)
+    {
+        using var factory = new UrlFactory(url);
+        var ex = Assert.ThrowsAny<Exception>(() => factory.CreateClient());
+        Assert.Contains("Folio:Url must be", ex.ToString());
+    }
+
+    private sealed class UrlFactory(string url) : FolioFactory
+    {
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            base.ConfigureWebHost(builder);
+            builder.UseSetting("Folio:Url", url);
+        }
     }
 }

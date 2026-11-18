@@ -40,7 +40,14 @@ if (!string.IsNullOrWhiteSpace(logDir))
 
 // One Folio per database. Starting it again (the desktop shortcut) just opens the running one in the browser.
 var openBrowser = args.Contains("--open");
-var siteUrl = builder.Configuration["Kestrel:Endpoints:Https:Url"] ?? "https://localhost:7245";
+// Where Folio listens (Folio:Url). Always localhost. HTTPS by default (development uses the dev certificate). The
+// installed copy uses plain http://localhost: traffic never leaves the PC, browsers treat localhost as a secure
+// context, and nobody has to trust a certificate by hand. See README "Security".
+var siteUrl = builder.Configuration["Folio:Url"] ?? "https://localhost:7245";
+if (!Uri.TryCreate(siteUrl, UriKind.Absolute, out var site) || site.Host != "localhost" || site.Scheme is not ("http" or "https") || site.AbsolutePath != "/")
+    throw new InvalidOperationException($"Folio:Url must be http://localhost:<port> or https://localhost:<port>, not \"{siteUrl}\".");
+siteUrl = site.GetLeftPart(UriPartial.Authority);
+var useHttps = site.Scheme == "https";
 var dbPath = Path.GetFullPath(new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder(
     builder.Configuration.GetConnectionString("Folio") ?? "Data Source=folio.db").DataSource, builder.Environment.ContentRootPath);
 var instanceName = "Local\\Folio-" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
@@ -66,6 +73,11 @@ builder.WebHost.ConfigureKestrel(k =>
     k.AddServerHeader = false;
     k.Limits.MaxRequestBodySize = 64 * 1024;
     k.Limits.MaxRequestHeadersTotalSize = 32 * 1024;
+    // Loopback only (127.0.0.1 and ::1): other devices on your network can't connect.
+    k.ListenLocalhost(site.Port, o => { if (useHttps) o.UseHttps(); });
+    // With HTTPS, a plain-HTTP port that only redirects to it (Folio:HttpRedirectPort; 0 turns it off).
+    if (useHttps && builder.Configuration.GetValue<int?>("Folio:HttpRedirectPort") is > 0 and var redirectPort)
+        k.ListenLocalhost(redirectPort);
 });
 
 builder.Services.AddDbContext<FolioDb>(o =>
@@ -153,10 +165,10 @@ using (var scope = app.Services.CreateScope())
         app.Logger.LogWarning("Finnhub:ApiKey is not set. Quotes and trading are off until you add a key on the page's setup screen.");
 }
 
-// Security (see README): headers on every response, HTTPS only, and no API calls from other websites.
-// Kestrel listens on localhost only and AllowedHosts rejects other host names (DNS rebinding); both in appsettings.json.
-app.UseSecurityHeaders();
-app.UseHttpsRedirection();
+// Security (see README): headers on every response, HTTPS when Folio:Url is https, and no API calls from other
+// websites. Kestrel listens on localhost only (above) and AllowedHosts rejects other host names (DNS rebinding).
+app.UseSecurityHeaders(useHttps);
+if (useHttps) app.UseHttpsRedirection();
 if (accessKey is not null) app.UseAccessKey(accessKey);
 app.UseCrossSiteGuard();
 

@@ -13,6 +13,11 @@ public sealed class AccessKey
 {
     // "__Host-" makes the browser refuse the cookie unless it's Secure, Path=/ and has no Domain.
     public const string CookieName = "__Host-folio-access";
+    // Over plain http://localhost (the installed copy) a Secure cookie can't be relied on in every browser, so the
+    // cookie drops the prefix and Secure, keeping HttpOnly, SameSite=Strict, Path=/ and no Domain.
+    public const string PlainCookieName = "folio-access";
+
+    public static string CookieNameFor(HttpRequest request) => request.IsHttps ? CookieName : PlainCookieName;
     public const string HeaderName = "X-Folio-Key";
     public const string UnlockPath = "/unlock";
     private static readonly TimeSpan CookieLifetime = TimeSpan.FromDays(400); // the most browsers allow
@@ -57,10 +62,10 @@ public sealed class AccessKey
     private static bool FixedEquals(byte[] expected, string candidate) =>
         CryptographicOperations.FixedTimeEquals(expected, Encoding.UTF8.GetBytes(candidate));
 
-    public void SetCookie(HttpResponse response) => response.Cookies.Append(CookieName, Encoding.UTF8.GetString(_cookie), new CookieOptions
+    public void SetCookie(HttpResponse response) => response.Cookies.Append(CookieNameFor(response.HttpContext.Request), Encoding.UTF8.GetString(_cookie), new CookieOptions
     {
         HttpOnly = true,
-        Secure = true,
+        Secure = response.HttpContext.Request.IsHttps,
         SameSite = SameSiteMode.Strict,
         Path = "/",
         MaxAge = CookieLifetime,
@@ -87,7 +92,7 @@ public static class AccessKeyMiddleware
             return;
         }
 
-        if (key.IsCookie(req.Cookies[AccessKey.CookieName]) || key.IsKey(req.Headers[AccessKey.HeaderName].ToString()))
+        if (key.IsCookie(req.Cookies[AccessKey.CookieNameFor(req)]) || key.IsKey(req.Headers[AccessKey.HeaderName].ToString()))
         {
             await next();
             return;

@@ -19,6 +19,11 @@
     <EmbeddedResource Remove="FolioTray/**" />
   </ItemGroup>
 
+  <!-- Development settings stay out of every published build (the installed copy and the release zip run as Production). -->
+  <ItemGroup>
+    <Content Update="appsettings.Development.json" CopyToPublishDirectory="Never" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.15">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>

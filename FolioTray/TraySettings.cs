@@ -35,7 +35,8 @@ internal sealed record TraySettings(string AppDirectory, string FolioExe, string
             {
                 using var doc = JsonDocument.Parse(File.ReadAllText(path), new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
                 var root = doc.RootElement;
-                if (Get(root, "Kestrel", "Endpoints", "Https", "Url") is { Length: > 0 } u) url = u;
+                // Folio:Url since the installed copy moved to plain http://localhost; Kestrel's endpoint before that.
+                if ((Get(root, "Folio", "Url") ?? Get(root, "Kestrel", "Endpoints", "Https", "Url")) is { Length: > 0 } u) url = u;
                 if (Get(root, "Folio", "DataDirectory") is { Length: > 0 } d) data = Path.GetFullPath(Environment.ExpandEnvironmentVariables(d));
             }
             catch (JsonException) { /* fall back to defaults */ }
